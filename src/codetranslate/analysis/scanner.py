@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..core.models import ProjectScanSummary
+from ..core.models import MigrationRequest, ProjectScanSummary
 from .language_registry import LanguageRegistry
 from .language_specs import detect_languages_from_config
 
@@ -11,7 +11,7 @@ class ProjectScanner:
     def __init__(self, registry: LanguageRegistry | None = None) -> None:
         self.registry = registry or LanguageRegistry()
 
-    def scan(self, project_root: str) -> ProjectScanSummary:
+    def scan(self, project_root: str, request: MigrationRequest) -> ProjectScanSummary:
         root = Path(project_root).resolve()
         source_directories: set[str] = set()
         test_directories: set[str] = set()
@@ -29,14 +29,26 @@ class ProjectScanner:
                 continue
             if not path.is_file():
                 continue
+            relative = path.relative_to(root).as_posix()
+            if request.include_paths and not any(
+                relative == include or relative.startswith(include.rstrip("/") + "/")
+                for include in request.include_paths
+            ):
+                continue
+            if any(
+                relative == exclude or relative.startswith(exclude.rstrip("/") + "/")
+                for exclude in request.exclude_paths
+            ):
+                continue
 
             files_scanned += 1
-            relative = path.relative_to(root).as_posix()
             parts = set(path.parts)
 
             if detect_languages_from_config(path.name):
                 config_files.append(relative)
                 for language in detect_languages_from_config(path.name):
+                    if language != request.source_language:
+                        continue
                     adapter = self.registry.adapter_for_language(language)
                     if adapter is not None:
                         languages.add(language)
@@ -48,6 +60,8 @@ class ProjectScanner:
 
             adapter = self.registry.adapter_for_path(path)
             if adapter is None:
+                continue
+            if getattr(adapter, "language", None) != request.source_language:
                 continue
             observation = adapter.scan_file(path, root)
             languages.update(observation.languages)
@@ -66,7 +80,7 @@ class ProjectScanner:
             frameworks=sorted(frameworks),
             build_tools=sorted(build_tools),
             dependency_managers=sorted(dependency_managers),
-            entrypoints=sorted(entrypoints),
-            candidate_entrypoints=sorted(candidate_entrypoints),
+            entrypoints=sorted(set(entrypoints).union(request.entry_hints)),
+            candidate_entrypoints=sorted(set(candidate_entrypoints).union(request.entry_hints)),
             files_scanned=files_scanned,
         )

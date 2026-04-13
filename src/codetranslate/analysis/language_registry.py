@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .adapters.base import LanguageAdapter
 from .adapters.generic import GenericAdapter
+from .adapters.nodejs_adapter import NodeJsAdapter
 from .adapters.python_adapter import PythonAdapter
 from .language_specs import detect_language_by_suffix
 
@@ -15,7 +16,7 @@ class LanguageRegistry:
             "java": GenericAdapter("java"),
             "go": GenericAdapter("go"),
             "rust": GenericAdapter("rust"),
-            "nodejs": GenericAdapter("nodejs"),
+            "nodejs": NodeJsAdapter(),
         }
 
     def adapters(self) -> list[LanguageAdapter]:

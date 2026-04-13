@@ -1,49 +1,40 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
-from ..core.models import AnalysisResult, MigrationUnit, ModuleDependency, RiskLevel, UnitStatus
+from ..core.models import AnalysisResult, MigrationUnit, ModuleDependency, RiskLevel, SourceFileRecord, UnitStatus
 
 
 class MigrationPlanner:
-    def build_units(self, analysis: AnalysisResult, target_root: str) -> list[MigrationUnit]:
+    def build_units(self, analysis: AnalysisResult, target_root: str, target_language: str) -> list[MigrationUnit]:
         target_path = Path(target_root)
-        symbol_lookup = {symbol.symbol_id: symbol for symbol in analysis.symbols}
-        module_to_units: dict[str, list[MigrationUnit]] = {}
-        units: list[MigrationUnit] = []
-        unit_by_symbol: dict[str, MigrationUnit] = {}
         project_root = Path(analysis.project_root)
         entrypoint_modules = {entrypoint.module for entrypoint in analysis.entrypoints}
-
+        entrypoint_modules.update(self._modules_from_project_insights(analysis))
+        symbols_by_module: dict[str, list[object]] = defaultdict(list)
         for symbol in analysis.symbols:
-            source_lines = Path(symbol.file_path).read_text(encoding="utf-8").splitlines()
-            snippet = "\n".join(source_lines[symbol.line_start - 1 : symbol.line_end])
-            relative_path = Path(symbol.file_path).relative_to(project_root)
-            unit = MigrationUnit(
-                unit_id=symbol.symbol_id.replace(":", "__"),
-                symbol_id=symbol.symbol_id,
-                name=symbol.name,
-                language=symbol.language,
-                module=symbol.module,
-                file_path=symbol.file_path,
-                target_file_path=str(target_path / relative_path),
-                kind=symbol.kind,
-                source_code=snippet,
-                signature=symbol.signature,
-                risk_level=self._initial_risk_level(symbol.symbol_id, symbol.module, analysis.risk_nodes, entrypoint_modules),
-                test_requirements=[
-                    "normal path",
-                    "boundary case",
-                    "exception path if applicable",
-                ],
-                status=UnitStatus.ANALYZED,
+            symbols_by_module[symbol.module].append(symbol)
+
+        units: list[MigrationUnit] = []
+        unit_by_module: dict[str, MigrationUnit] = {}
+
+        for source_file in analysis.source_files:
+            if source_file.role != "source":
+                continue
+            unit = self._build_file_unit(
+                source_file=source_file,
+                project_root=project_root,
+                target_path=target_path,
+                target_language=target_language,
+                symbols=symbols_by_module.get(source_file.module, []),
+                risk_nodes=analysis.risk_nodes,
+                entrypoint_modules=entrypoint_modules,
             )
             units.append(unit)
-            unit_by_symbol[symbol.symbol_id] = unit
-            module_to_units.setdefault(unit.module, []).append(unit)
+            unit_by_module[source_file.module] = unit
 
-        self._attach_call_dependencies(analysis, symbol_lookup, unit_by_symbol)
-        self._attach_module_dependencies(analysis.module_dependencies, module_to_units)
+        self._attach_module_dependencies(analysis.module_dependencies, unit_by_module)
 
         for unit in units:
             if unit.risk_level == RiskLevel.HIGH:
@@ -53,56 +44,87 @@ class MigrationPlanner:
 
         return units
 
-    def _initial_risk_level(
+    def _modules_from_project_insights(self, analysis: AnalysisResult) -> set[str]:
+        inferred = set()
+        source_file_by_path = {record.path: record.module for record in analysis.source_files}
+        for path in analysis.project_insights.get("inferred_entrypoints", []):
+            normalized = str(path).lstrip("./")
+            module = source_file_by_path.get(normalized)
+            if module:
+                inferred.add(module)
+        for path in analysis.project_insights.get("startup_files", []):
+            normalized = str(path).lstrip("./")
+            module = source_file_by_path.get(normalized)
+            if module:
+                inferred.add(module)
+        return inferred
+
+    def _build_file_unit(
         self,
-        symbol_id: str,
+        source_file: SourceFileRecord,
+        project_root: Path,
+        target_path: Path,
+        target_language: str,
+        symbols: list[object],
+        risk_nodes: list[str],
+        entrypoint_modules: set[str],
+    ) -> MigrationUnit:
+        source_path = project_root / source_file.path
+        source_code = source_path.read_text(encoding="utf-8")
+        public_symbols = [symbol.name for symbol in symbols if not symbol.name.startswith("_")]
+        name = source_path.stem
+        return MigrationUnit(
+            unit_id=f"{source_file.module.replace('.', '__')}__file",
+            symbol_id=f"{source_file.module}:__file__",
+            name=name,
+            language=source_file.language,
+            target_language=target_language,
+            module=source_file.module,
+            file_path=str(source_path),
+            target_file_path=str(target_path / source_file.path),
+            kind="file",
+            source_code=source_code,
+            signature=f"file {source_file.module}",
+            risk_level=self._risk_level(source_file.module, symbols, risk_nodes, entrypoint_modules),
+            test_requirements=self._build_test_requirements(source_file, public_symbols),
+            status=UnitStatus.ANALYZED,
+        )
+
+    def _build_test_requirements(self, source_file: SourceFileRecord, public_symbols: list[str]) -> list[str]:
+        requirements = [
+            "file imports successfully",
+            "public exports preserve source contract",
+            "basic dependency interaction",
+        ]
+        if public_symbols:
+            requirements.append(f"cover symbols: {', '.join(public_symbols[:8])}")
+        if source_file.module.endswith(("main", "app", "server")):
+            requirements.append("entrypoint behavior remains stable")
+        return requirements
+
+    def _risk_level(
+        self,
         module: str,
+        symbols: list[object],
         risk_nodes: list[str],
         entrypoint_modules: set[str],
     ) -> RiskLevel:
-        if symbol_id in risk_nodes or module in risk_nodes:
+        symbol_ids = {symbol.symbol_id for symbol in symbols}
+        if module in risk_nodes or any(symbol_id in risk_nodes for symbol_id in symbol_ids):
             return RiskLevel.HIGH
         if module in entrypoint_modules:
             return RiskLevel.MEDIUM
         return RiskLevel.LOW
 
-    def _attach_call_dependencies(
-        self,
-        analysis: AnalysisResult,
-        symbol_lookup: dict[str, object],
-        unit_by_symbol: dict[str, MigrationUnit],
-    ) -> None:
-        for edge in analysis.call_graph:
-            source_unit = unit_by_symbol.get(edge.source)
-            current_module = source_unit.module if source_unit is not None else ""
-            target_symbol = self._resolve_target_symbol(edge.target, symbol_lookup, current_module)
-            target_unit = unit_by_symbol.get(target_symbol) if target_symbol else None
-            self._link_units(source_unit, target_unit)
-
     def _attach_module_dependencies(
         self,
         module_dependencies: list[ModuleDependency],
-        module_to_units: dict[str, list[MigrationUnit]],
+        unit_by_module: dict[str, MigrationUnit],
     ) -> None:
         for dependency in module_dependencies:
-            source_units = module_to_units.get(dependency.source_module, [])
-            target_units = module_to_units.get(dependency.target_module, [])
-            if not source_units or not target_units:
-                continue
-            filtered_targets = self._filter_targets_by_symbols(target_units, dependency.symbols)
-            for source_unit in source_units:
-                for target_unit in filtered_targets:
-                    self._link_units(source_unit, target_unit)
-
-    def _filter_targets_by_symbols(
-        self,
-        target_units: list[MigrationUnit],
-        symbols: list[str],
-    ) -> list[MigrationUnit]:
-        if not symbols:
-            return target_units
-        filtered = [unit for unit in target_units if unit.name in symbols]
-        return filtered or target_units
+            source_unit = unit_by_module.get(dependency.source_module)
+            target_unit = unit_by_module.get(dependency.target_module)
+            self._link_units(source_unit, target_unit)
 
     def _link_units(
         self,
@@ -115,12 +137,3 @@ class MigrationPlanner:
             source_unit.dependencies.append(target_unit.unit_id)
         if source_unit.unit_id not in target_unit.dependents:
             target_unit.dependents.append(source_unit.unit_id)
-
-    def _resolve_target_symbol(self, raw_target: str, symbol_lookup: dict[str, object], current_module: str) -> str | None:
-        direct = f"{current_module}:{raw_target}"
-        if direct in symbol_lookup:
-            return direct
-        matches = [symbol_id for symbol_id in symbol_lookup if symbol_id.endswith(f":{raw_target}")]
-        if len(matches) == 1:
-            return matches[0]
-        return None

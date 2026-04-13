@@ -6,6 +6,7 @@ from pathlib import Path
 from ..analysis.context_builder import UnitContextBuilder
 from ..core.models import AnalysisResult, MigrationUnit, UnitContext, UnitExecutionResult, UnitStatus
 from ..storage.workspace import WorkspaceManager
+from .reporter import get_reporter
 from .migrator import UnitMigrator
 from .repairer import Repairer
 from .tester import UnitTester
@@ -39,6 +40,7 @@ class UnitExecutor:
         units_by_id: dict[str, MigrationUnit],
     ) -> bool:
         logger.info("Processing unit %s", unit.unit_id)
+        get_reporter().stage("Execute File", unit.file_path)
         context = self.context_builder.build(unit, analysis, units_by_id)
         self.workspace.save_context(context)
         self.migrator.migrate(unit, context)

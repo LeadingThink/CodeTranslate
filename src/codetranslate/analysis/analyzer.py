@@ -2,15 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..core.models import AnalysisResult, ProjectIR, ProjectScanSummary
+from ..core.models import AnalysisResult, MigrationRequest, ProjectIR, ProjectScanSummary
 from .language_registry import LanguageRegistry
+from .project_intelligence import ProjectIntelligenceAnalyzer
 
 
 class ProjectAnalyzer:
-    def __init__(self, registry: LanguageRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: LanguageRegistry | None = None,
+        intelligence: ProjectIntelligenceAnalyzer | None = None,
+    ) -> None:
         self.registry = registry or LanguageRegistry()
+        self.intelligence = intelligence
 
-    def analyze(self, project_root: str, scan: ProjectScanSummary) -> AnalysisResult:
+    def analyze(self, project_root: str, scan: ProjectScanSummary, request: MigrationRequest) -> AnalysisResult:
         root = Path(project_root).resolve()
         source_files = []
         module_dependencies = []
@@ -35,7 +41,7 @@ class ProjectAnalyzer:
             ir_nodes.extend(analysis.ir_nodes)
             risk_nodes.update(analysis.risk_nodes)
 
-        return AnalysisResult(
+        result = AnalysisResult(
             project_root=str(root),
             scan=scan,
             source_files=source_files,
@@ -47,3 +53,6 @@ class ProjectAnalyzer:
             ir=ProjectIR(nodes=ir_nodes, edges=edges),
             risk_nodes=sorted(risk_nodes),
         )
+        if self.intelligence is not None:
+            result.project_insights = self.intelligence.enrich(result, request)
+        return result

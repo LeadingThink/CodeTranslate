@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .llm import LLMClient
+from .language_runtime import validate_source_file
 from ..core.models import MigrationUnit, UnitContext, UnitExecutionResult, UnitStatus
 from ..storage.workspace import WorkspaceManager
 
@@ -16,10 +17,9 @@ class UnitMigrator:
         unit.status = UnitStatus.GENERATING
         generation = self.llm.generate_code(context)
         target_path = Path(context.target_file_path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        content = generation.code.strip() + "\n"
-        self._validate_python(content, target_path)
-        target_path.write_text(content, encoding="utf-8")
+        if not target_path.exists():
+            raise RuntimeError(f"Agent did not write target file: {target_path}")
+        validate_source_file(target_path, unit.target_language)
         log_path = self.workspace.log_unit(unit.unit_id, "generate", generation.rationale)
         unit.status = UnitStatus.GENERATED
         return UnitExecutionResult(
@@ -29,6 +29,3 @@ class UnitMigrator:
             log_path=str(log_path),
             details={"rationale": generation.rationale},
         )
-
-    def _validate_python(self, content: str, target_path: Path) -> None:
-        compile(content, str(target_path), "exec")

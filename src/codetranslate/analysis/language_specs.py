@@ -49,10 +49,11 @@ LANGUAGE_SPECS: dict[str, LanguageSpec] = {
     "nodejs": LanguageSpec(
         name="nodejs",
         extensions=(".js", ".mjs", ".cjs", ".ts"),
-        config_files=("package.json",),
+        config_files=("package.json", "tsconfig.json", "jsconfig.json", "vite.config.ts", "vite.config.js"),
         build_tools=("npm", "pnpm", "yarn"),
         dependency_managers=("npm", "pnpm", "yarn"),
-        entrypoint_filenames=("index.js", "main.js", "app.js", "server.js"),
+        frameworks=("express", "koa", "nestjs", "fastify", "nextjs"),
+        entrypoint_filenames=("index.js", "main.js", "app.js", "server.js", "index.ts", "main.ts", "app.ts", "server.ts"),
     ),
 }
 

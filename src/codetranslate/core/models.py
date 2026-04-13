@@ -27,10 +27,20 @@ class RiskLevel(str, Enum):
 
 
 @dataclass(slots=True)
+class MigrationRequest:
+    source_language: str
+    target_language: str
+    entry_hints: list[str] = field(default_factory=list)
+    include_paths: list[str] = field(default_factory=list)
+    exclude_paths: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ProjectPaths:
     source_root: str
     workspace_root: str
     target_root: str
+    request: MigrationRequest
 
 
 @dataclass(slots=True)
@@ -144,6 +154,7 @@ class AnalysisResult:
     call_graph: list[CallEdge]
     ir: ProjectIR
     risk_nodes: list[str]
+    project_insights: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -152,6 +163,7 @@ class MigrationUnit:
     symbol_id: str
     name: str
     language: str
+    target_language: str
     module: str
     file_path: str
     target_file_path: str
@@ -172,8 +184,12 @@ class MigrationUnit:
 class UnitContext:
     unit_id: str
     source_code: str
+    source_file_content: str
     signature: str | None
     summary: str
+    module_imports: list[str]
+    decorators: list[str]
+    module_level_context: str
     input_models: list[str]
     output_models: list[str]
     direct_dependencies: list[str]

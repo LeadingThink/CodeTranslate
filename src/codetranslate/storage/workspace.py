@@ -21,6 +21,7 @@ class WorkspaceManager:
     def __init__(self, paths: ProjectPaths) -> None:
         self.paths = paths
         self.root = Path(paths.workspace_root)
+        self.target_root = Path(paths.target_root)
         self.analysis_dir = self.root / "analysis"
         self.plan_dir = self.root / "plan"
         self.state_dir = self.root / "state"
@@ -33,6 +34,7 @@ class WorkspaceManager:
     def initialize(self) -> None:
         for directory in (
             self.root,
+            self.target_root,
             self.analysis_dir,
             self.plan_dir,
             self.state_dir,
@@ -75,6 +77,7 @@ class WorkspaceManager:
         self.write_json("analysis/models.json", result.models)
         self.write_json("analysis/callgraph.json", result.call_graph)
         self.write_json("analysis/ir.json", result.ir)
+        self.write_json("analysis/project_insights.json", result.project_insights)
         self.write_json("reports/risk_summary.json", {"risk_nodes": result.risk_nodes})
 
     def save_units(self, units: list[MigrationUnit]) -> None:
@@ -146,6 +149,7 @@ class WorkspaceManager:
             normalized = {
                 **item,
                 "risk_level": item.get("risk_level", "low"),
+                "target_language": item.get("target_language", item.get("language", "python")),
                 "status": UnitStatus(status_row.get("status", item.get("status", UnitStatus.DISCOVERED.value))),
                 "retry_count": status_row.get("retry_count", item.get("retry_count", 0)),
                 "failure_reason": status_row.get("failure_reason", item.get("failure_reason")),

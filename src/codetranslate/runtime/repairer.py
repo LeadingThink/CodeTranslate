@@ -15,17 +15,13 @@ class Repairer:
     def repair(self, unit: MigrationUnit, context: UnitContext, failure_log: str, test_path: Path) -> bool:
         unit.status = UnitStatus.REPAIRING
         unit.retry_count += 1
-        artifact = self.llm.repair_artifact(context, failure_log, str(test_path))
+        action = self.llm.repair_artifact(context, failure_log, str(test_path))
         failure_type = self._classify_failure(failure_log)
-        impact_scope: list[str] = []
-        action = "No automated repair artifact was produced."
-        if artifact is not None:
-            path = Path(artifact.path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            compile(artifact.content, str(path), "exec")
-            path.write_text(artifact.content.rstrip() + "\n", encoding="utf-8")
-            impact_scope = [str(path)]
-            action = artifact.rationale
+        impact_scope = [
+            str(path)
+            for path in (Path(unit.target_file_path), test_path)
+            if path.exists()
+        ]
         record = RepairRecord(
             unit_id=unit.unit_id,
             attempt=unit.retry_count,

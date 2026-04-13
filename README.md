@@ -38,6 +38,8 @@ UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m codetranslate.cli \
   --project-root examples/sample_source \
   --workspace-root .demo-workspace \
   --target-root .demo-target \
+  --source-language python \
+  --target-language python \
   analyze
 ```
 
@@ -46,6 +48,8 @@ UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m codetranslate.cli \
   --project-root examples/sample_source \
   --workspace-root .demo-workspace \
   --target-root .demo-target \
+  --source-language python \
+  --target-language python \
   run
 ```
 

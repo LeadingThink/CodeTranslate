@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
+from .interactive import start_interactive_session
 from ..core.logging_utils import configure_logging
-from ..core.models import ProjectPaths
+from ..core.models import MigrationRequest, ProjectPaths
 from ..engine.orchestrator import MigrationOrchestrator
 
 
@@ -14,9 +16,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--workspace-root", default=".codetranslate-workspace")
     parser.add_argument("--target-root", default="generated_target")
+    parser.add_argument("--source-language", required=True)
+    parser.add_argument("--target-language", required=True)
+    parser.add_argument("--entry-hint", action="append", default=[])
+    parser.add_argument("--include-path", action="append", default=[])
+    parser.add_argument("--exclude-path", action="append", default=[])
     parser.add_argument("--verbose", action="store_true")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("start")
     subparsers.add_parser("analyze")
     subparsers.add_parser("plan")
     subparsers.add_parser("run")
@@ -33,10 +41,22 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     configure_logging(args.verbose)
+    if args.command == "start":
+        logging.getLogger().setLevel(logging.WARNING)
+        start_interactive_session()
+        return
+    request = MigrationRequest(
+        source_language=args.source_language,
+        target_language=args.target_language,
+        entry_hints=args.entry_hint,
+        include_paths=args.include_path,
+        exclude_paths=args.exclude_path,
+    )
     paths = ProjectPaths(
         source_root=str(Path(args.project_root).resolve()),
         workspace_root=str(Path(args.workspace_root).resolve()),
         target_root=str(Path(args.target_root).resolve()),
+        request=request,
     )
     orchestrator = MigrationOrchestrator(paths)
 

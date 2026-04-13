@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.demo-workspace/
+.demo-target/
+.codetranslate-workspace/
+generated_target/
+.env
+.env.local

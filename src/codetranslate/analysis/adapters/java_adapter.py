@@ -211,31 +211,35 @@ class JavaAdapter:
         result.ir_nodes.extend(self._build_ir_nodes(parsed_modules))
         result.project_insights.update(
             {
-                "java_analysis": {
-                    "reflection_points": reflection_points,
-                    "dynamic_calls": dynamic_calls,
-                    "ioc_components": ioc_components,
-                    "middleware": middleware,
-                    "async_flows": async_flows,
-                    "annotations": annotations,
-                },
-                "summary": self._build_summary(
-                    reflection_points,
-                    dynamic_calls,
-                    ioc_components,
-                    middleware,
-                    async_flows,
-                ),
-                "migration_notes": self._build_migration_notes(
-                    reflection_points, dynamic_calls, middleware, async_flows
-                ),
-                "high_risk_files": sorted(
-                    {
-                        item["path"]
-                        for item in reflection_points + async_flows
-                        if item.get("path")
+                "language_insights": {
+                    "java": {
+                        "summary": self._build_summary(
+                            reflection_points,
+                            dynamic_calls,
+                            ioc_components,
+                            middleware,
+                            async_flows,
+                        ),
+                        "migration_notes": self._build_migration_notes(
+                            reflection_points, dynamic_calls, middleware, async_flows
+                        ),
+                        "high_risk_files": sorted(
+                            {
+                                item["path"]
+                                for item in reflection_points + async_flows
+                                if item.get("path")
+                            }
+                        ),
+                        "details": {
+                            "reflection_points": reflection_points,
+                            "dynamic_calls": dynamic_calls,
+                            "ioc_components": ioc_components,
+                            "middleware": middleware,
+                            "async_flows": async_flows,
+                            "annotations": annotations,
+                        },
                     }
-                ),
+                },
             }
         )
         return result

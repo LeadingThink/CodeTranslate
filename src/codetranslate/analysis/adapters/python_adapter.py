@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ...core.models import (
     CallEdge,
@@ -39,10 +40,17 @@ class ModuleParseResult:
     call_graph: list[CallEdge] = field(default_factory=list)
     ir_nodes: list[IRNode] = field(default_factory=list)
     risk_nodes: list[str] = field(default_factory=list)
+    middleware: list[dict[str, Any]] = field(default_factory=list)
+    dynamic_calls: list[dict[str, Any]] = field(default_factory=list)
+    async_flows: list[dict[str, Any]] = field(default_factory=list)
+    framework_endpoints: list[dict[str, Any]] = field(default_factory=list)
+    reflection_points: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _ModuleAnalyzer(ast.NodeVisitor):
-    def __init__(self, source: str, module: str, file_path: str, project_root: Path) -> None:
+    def __init__(
+        self, source: str, module: str, file_path: str, project_root: Path
+    ) -> None:
         self.source = source
         self.module = module
         self.file_path = file_path
@@ -57,11 +65,18 @@ class _ModuleAnalyzer(ast.NodeVisitor):
         self.current_symbol: SymbolRecord | None = None
         self.class_depth = 0
         self.function_depth = 0
+        self.middleware: list[dict[str, Any]] = []
+        self.dynamic_calls: list[dict[str, Any]] = []
+        self.async_flows: list[dict[str, Any]] = []
+        self.framework_endpoints: list[dict[str, Any]] = []
+        self.reflection_points: list[dict[str, Any]] = []
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             local_name = alias.asname or alias.name.split(".")[0]
-            self.imports[local_name] = ImportBinding(local_name=local_name, target_module=alias.name)
+            self.imports[local_name] = ImportBinding(
+                local_name=local_name, target_module=alias.name
+            )
             self.module_dependencies.append(
                 ModuleDependency(
                     source_module=self.module,
@@ -71,6 +86,7 @@ class _ModuleAnalyzer(ast.NodeVisitor):
                     symbols=[],
                 )
             )
+            self._track_import_side_effects(alias.name, node.lineno)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         target_module = self._resolve_import_from(node.module, node.level)
@@ -94,6 +110,7 @@ class _ModuleAnalyzer(ast.NodeVisitor):
                 symbols=imported_symbols,
             )
         )
+        self._track_import_side_effects(target_module, node.lineno)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._handle_function(node, "function")
@@ -141,9 +158,60 @@ class _ModuleAnalyzer(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         if self.current_symbol is not None:
             callee = self._expr_to_str(node.func)
-            self.call_edges.append(CallEdge(source=self.current_symbol.symbol_id, target=callee))
+            self.call_edges.append(
+                CallEdge(source=self.current_symbol.symbol_id, target=callee)
+            )
             if callee in {"getattr", "setattr", "hasattr", "__import__"}:
                 self.risk_nodes.append(self.current_symbol.symbol_id)
+                self.dynamic_calls.append(
+                    {
+                        "module": self.module,
+                        "symbol": self.current_symbol.symbol_id,
+                        "path": Path(self.file_path)
+                        .relative_to(self.project_root)
+                        .as_posix(),
+                        "line": node.lineno,
+                        "call": callee,
+                        "category": "dynamic_runtime_access",
+                    }
+                )
+            if callee in {
+                "getattr",
+                "setattr",
+                "hasattr",
+                "importlib.import_module",
+                "__import__",
+            }:
+                self.reflection_points.append(
+                    {
+                        "module": self.module,
+                        "symbol": self.current_symbol.symbol_id,
+                        "path": Path(self.file_path)
+                        .relative_to(self.project_root)
+                        .as_posix(),
+                        "line": node.lineno,
+                        "call": callee,
+                    }
+                )
+            if callee in {
+                "asyncio.create_task",
+                "asyncio.gather",
+                "asyncio.run",
+                "create_task",
+                "gather",
+            }:
+                self.async_flows.append(
+                    {
+                        "module": self.module,
+                        "symbol": self.current_symbol.symbol_id,
+                        "path": Path(self.file_path)
+                        .relative_to(self.project_root)
+                        .as_posix(),
+                        "line": node.lineno,
+                        "call": callee,
+                        "kind": "async_runtime",
+                    }
+                )
         self.generic_visit(node)
 
     def finalize(self) -> ModuleParseResult:
@@ -156,7 +224,12 @@ class _ModuleAnalyzer(ast.NodeVisitor):
         )
         if self._has_main_guard():
             self.entrypoints.append(
-                EntrypointRecord(path=relative, language="python", kind="main_guard", module=self.module)
+                EntrypointRecord(
+                    path=relative,
+                    language="python",
+                    kind="main_guard",
+                    module=self.module,
+                )
             )
         ir_nodes = [
             IRNode(
@@ -183,9 +256,16 @@ class _ModuleAnalyzer(ast.NodeVisitor):
             call_graph=self.call_edges,
             ir_nodes=ir_nodes,
             risk_nodes=self.risk_nodes,
+            middleware=self.middleware,
+            dynamic_calls=self.dynamic_calls,
+            async_flows=self.async_flows,
+            framework_endpoints=self.framework_endpoints,
+            reflection_points=self.reflection_points,
         )
 
-    def _handle_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, kind: str) -> None:
+    def _handle_function(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, kind: str
+    ) -> None:
         if self.class_depth > 0 or self.function_depth > 0:
             self.function_depth += 1
             self.generic_visit(node)
@@ -208,10 +288,94 @@ class _ModuleAnalyzer(ast.NodeVisitor):
         previous = self.current_symbol
         self.current_symbol = symbol
         self.symbols.append(symbol)
+        self._track_function_semantics(node, symbol)
         self.function_depth += 1
         self.generic_visit(node)
         self.function_depth -= 1
         self.current_symbol = previous
+
+    def _track_function_semantics(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, symbol: SymbolRecord
+    ) -> None:
+        relative = Path(self.file_path).relative_to(self.project_root).as_posix()
+        decorators = [self._expr_to_str(item) for item in node.decorator_list]
+        route_decorators = [
+            decorator
+            for decorator in decorators
+            if any(
+                token in decorator
+                for token in (
+                    ".get",
+                    ".post",
+                    ".put",
+                    ".delete",
+                    ".patch",
+                    "app.route",
+                    "router.",
+                )
+            )
+        ]
+        if route_decorators:
+            self.framework_endpoints.append(
+                {
+                    "module": self.module,
+                    "symbol": symbol.symbol_id,
+                    "path": relative,
+                    "line": node.lineno,
+                    "decorators": route_decorators,
+                }
+            )
+            self.risk_nodes.append(symbol.symbol_id)
+        if isinstance(node, ast.AsyncFunctionDef):
+            self.async_flows.append(
+                {
+                    "module": self.module,
+                    "symbol": symbol.symbol_id,
+                    "path": relative,
+                    "line": node.lineno,
+                    "call": node.name,
+                    "kind": "async_function",
+                }
+            )
+        if any(
+            token in decorator
+            for decorator in decorators
+            for token in ("middleware", "before_request", "after_request")
+        ):
+            self.middleware.append(
+                {
+                    "module": self.module,
+                    "symbol": symbol.symbol_id,
+                    "path": relative,
+                    "line": node.lineno,
+                    "kind": "framework_middleware",
+                    "decorators": decorators,
+                }
+            )
+
+    def _track_import_side_effects(self, imported_module: str, line: int) -> None:
+        relative = Path(self.file_path).relative_to(self.project_root).as_posix()
+        middleware_map = {
+            "fastapi": ("http", "fastapi_app"),
+            "flask": ("http", "flask_app"),
+            "django": ("http", "django_app"),
+            "sqlalchemy": ("database", "orm"),
+            "celery": ("queue", "task_queue"),
+            "asyncio": ("async", "runtime"),
+        }
+        for prefix, (technology, kind) in middleware_map.items():
+            if imported_module == prefix or imported_module.startswith(prefix + "."):
+                self.middleware.append(
+                    {
+                        "module": self.module,
+                        "path": relative,
+                        "line": line,
+                        "technology": technology,
+                        "kind": kind,
+                        "import": imported_module,
+                    }
+                )
+                break
 
     def _resolve_import_from(self, module: str | None, level: int) -> str:
         if level <= 0:
@@ -240,7 +404,9 @@ class _ModuleAnalyzer(ast.NodeVisitor):
                 fields.append(
                     ModelField(
                         name=stmt.target.id,
-                        annotation=self._expr_to_str(stmt.annotation) if stmt.annotation else None,
+                        annotation=self._expr_to_str(stmt.annotation)
+                        if stmt.annotation
+                        else None,
                         default=self._expr_to_str(stmt.value) if stmt.value else None,
                     )
                 )
@@ -280,11 +446,23 @@ class PythonAdapter:
             observation.frameworks.add("django")
         return observation
 
-    def analyze_project(self, project_root: Path, scan: ProjectScanSummary) -> LanguageAnalysis:
+    def analyze_project(
+        self, project_root: Path, scan: ProjectScanSummary
+    ) -> LanguageAnalysis:
         parsed_modules = self._parse_modules(project_root)
-        symbol_index = {symbol.symbol_id: symbol for parsed in parsed_modules for symbol in parsed.symbols}
+        symbol_index = {
+            symbol.symbol_id: symbol
+            for parsed in parsed_modules
+            for symbol in parsed.symbols
+        }
         resolved_edges = self._resolve_call_edges(parsed_modules, symbol_index)
         result = LanguageAnalysis()
+
+        middleware: list[dict[str, Any]] = []
+        dynamic_calls: list[dict[str, Any]] = []
+        async_flows: list[dict[str, Any]] = []
+        framework_endpoints: list[dict[str, Any]] = []
+        reflection_points: list[dict[str, Any]] = []
 
         for parsed in parsed_modules:
             result.source_files.append(parsed.source_file)
@@ -294,20 +472,118 @@ class PythonAdapter:
             result.models.extend(parsed.models)
             result.ir_nodes.extend(parsed.ir_nodes)
             result.risk_nodes.extend(parsed.risk_nodes)
+            middleware.extend(parsed.middleware)
+            dynamic_calls.extend(parsed.dynamic_calls)
+            async_flows.extend(parsed.async_flows)
+            framework_endpoints.extend(parsed.framework_endpoints)
+            reflection_points.extend(parsed.reflection_points)
         result.call_graph.extend(resolved_edges)
+        result.project_insights.update(
+            {
+                "language_insights": {
+                    "python": {
+                        "summary": self._build_summary(
+                            middleware,
+                            dynamic_calls,
+                            async_flows,
+                            framework_endpoints,
+                            reflection_points,
+                        ),
+                        "migration_notes": self._build_migration_notes(
+                            middleware, dynamic_calls, async_flows, framework_endpoints
+                        ),
+                        "high_risk_files": sorted(
+                            {
+                                item["path"]
+                                for item in dynamic_calls
+                                + async_flows
+                                + framework_endpoints
+                                + reflection_points
+                                if item.get("path")
+                            }
+                        ),
+                        "details": {
+                            "middleware": middleware,
+                            "dynamic_calls": dynamic_calls,
+                            "async_flows": async_flows,
+                            "framework_endpoints": framework_endpoints,
+                            "reflection_points": reflection_points,
+                        },
+                    }
+                },
+            }
+        )
         return result
+
+    def _build_summary(
+        self,
+        middleware: list[dict[str, Any]],
+        dynamic_calls: list[dict[str, Any]],
+        async_flows: list[dict[str, Any]],
+        framework_endpoints: list[dict[str, Any]],
+        reflection_points: list[dict[str, Any]],
+    ) -> str:
+        parts: list[str] = []
+        if framework_endpoints:
+            parts.append(
+                f"Detected {len(framework_endpoints)} framework endpoint handlers"
+            )
+        if middleware:
+            parts.append(f"Observed {len(middleware)} middleware/runtime integrations")
+        if async_flows:
+            parts.append(f"Found {len(async_flows)} async execution hints")
+        if dynamic_calls or reflection_points:
+            parts.append(
+                f"Marked {len(dynamic_calls) + len(reflection_points)} dynamic/reflection-heavy sites"
+            )
+        return (
+            "; ".join(parts)
+            if parts
+            else "Python static analysis completed with baseline symbol extraction."
+        )
+
+    def _build_migration_notes(
+        self,
+        middleware: list[dict[str, Any]],
+        dynamic_calls: list[dict[str, Any]],
+        async_flows: list[dict[str, Any]],
+        framework_endpoints: list[dict[str, Any]],
+    ) -> list[str]:
+        notes: list[str] = []
+        if framework_endpoints:
+            notes.append(
+                "Preserve decorator-based routing semantics and request lifecycle hooks during migration."
+            )
+        if async_flows:
+            notes.append(
+                "Review asyncio task scheduling and async entrypoints to keep concurrency behavior aligned."
+            )
+        if dynamic_calls:
+            notes.append(
+                "Dynamic attribute/import access may need manual mapping in stricter target languages."
+            )
+        if any(item.get("technology") == "database" for item in middleware):
+            notes.append(
+                "ORM integration boundaries should be migrated before endpoint-level logic."
+            )
+        return notes
 
     def _parse_modules(self, project_root: Path) -> list[ModuleParseResult]:
         parsed_modules: list[ModuleParseResult] = []
         for path in project_root.rglob("*.py"):
-            if any(part in {".venv", "__pycache__"} or part.startswith(".git") for part in path.parts):
+            if any(
+                part in {".venv", "__pycache__"} or part.startswith(".git")
+                for part in path.parts
+            ):
                 continue
             source = path.read_text(encoding="utf-8")
             module = self._module_name(path, project_root)
             try:
                 tree = ast.parse(source)
             except SyntaxError:
-                parsed_modules.append(self._syntax_error_result(project_root, path, module, source))
+                parsed_modules.append(
+                    self._syntax_error_result(project_root, path, module, source)
+                )
                 continue
             analyzer = _ModuleAnalyzer(source, module, str(path), project_root)
             analyzer.visit(tree)
@@ -324,7 +600,11 @@ class PythonAdapter:
         for parsed in parsed_modules:
             for edge in parsed.call_graph:
                 target = self._resolve_target(edge.target, parsed, symbol_ids)
-                resolved.append(CallEdge(source=edge.source, target=target or edge.target, kind=edge.kind))
+                resolved.append(
+                    CallEdge(
+                        source=edge.source, target=target or edge.target, kind=edge.kind
+                    )
+                )
         return resolved
 
     def _resolve_target(
@@ -339,11 +619,17 @@ class PythonAdapter:
         root_name = raw_target.split(".", 1)[0]
         binding = parsed.imports.get(root_name)
         if binding is None:
-            matches = [symbol_id for symbol_id in symbol_ids if symbol_id.endswith(f":{raw_target}")]
+            matches = [
+                symbol_id
+                for symbol_id in symbol_ids
+                if symbol_id.endswith(f":{raw_target}")
+            ]
             return matches[0] if len(matches) == 1 else None
         remainder = raw_target.split(".", 1)[1] if "." in raw_target else ""
         if binding.target_symbol and remainder:
-            nested_candidate = f"{binding.target_module}.{binding.target_symbol}:{remainder}"
+            nested_candidate = (
+                f"{binding.target_module}.{binding.target_symbol}:{remainder}"
+            )
             if nested_candidate in symbol_ids:
                 return nested_candidate
         symbol_name = binding.target_symbol or remainder
@@ -353,10 +639,18 @@ class PythonAdapter:
         if candidate in symbol_ids:
             return candidate
         package_candidate = f"{binding.target_module}.{symbol_name}"
-        package_matches = [symbol_id for symbol_id in symbol_ids if symbol_id.startswith(f"{package_candidate}:")]
+        package_matches = [
+            symbol_id
+            for symbol_id in symbol_ids
+            if symbol_id.startswith(f"{package_candidate}:")
+        ]
         if len(package_matches) == 1 and not remainder:
             return package_matches[0]
-        matches = [symbol_id for symbol_id in symbol_ids if symbol_id.endswith(f":{symbol_name}")]
+        matches = [
+            symbol_id
+            for symbol_id in symbol_ids
+            if symbol_id.endswith(f":{symbol_name}")
+        ]
         return matches[0] if len(matches) == 1 else None
 
     def _module_name(self, path: Path, project_root: Path) -> str:

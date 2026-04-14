@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .adapters.base import LanguageAdapter
 from .adapters.generic import GenericAdapter
+from .adapters.go_adapter import GoAdapter
 from .adapters.java_adapter import JavaAdapter
 from .adapters.nodejs_adapter import NodeJsAdapter
 from .adapters.python_adapter import PythonAdapter
@@ -15,7 +16,7 @@ class LanguageRegistry:
         self._adapters: dict[str, LanguageAdapter] = {
             "python": PythonAdapter(),
             "java": JavaAdapter(),
-            "go": GenericAdapter("go"),
+            "go": GoAdapter(),
             "rust": GenericAdapter("rust"),
             "nodejs": NodeJsAdapter(),
         }

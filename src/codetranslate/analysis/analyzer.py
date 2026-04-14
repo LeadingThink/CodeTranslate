@@ -48,7 +48,11 @@ class ProjectAnalyzer:
             edges.extend(analysis.call_graph)
             ir_nodes.extend(analysis.ir_nodes)
             risk_nodes.update(analysis.risk_nodes)
-            project_insights.update(analysis.project_insights)
+            self._merge_project_insight_maps(
+                project_insights, analysis.project_insights
+            )
+
+        project_insights = self._normalize_project_insights(project_insights)
 
         result = AnalysisResult(
             project_root=str(root),
@@ -64,5 +68,129 @@ class ProjectAnalyzer:
             project_insights=project_insights,
         )
         if self.intelligence is not None:
-            result.project_insights.update(self.intelligence.enrich(result, request))
+            self._merge_project_insight_maps(
+                result.project_insights, self.intelligence.enrich(result, request)
+            )
+            result.project_insights = self._normalize_project_insights(
+                result.project_insights
+            )
         return result
+
+    def _merge_project_insight_maps(
+        self, base: dict[str, object], incoming: dict[str, object]
+    ) -> None:
+        for key, value in incoming.items():
+            if key == "language_insights" and isinstance(value, dict):
+                existing = base.get("language_insights")
+                merged = dict(existing) if isinstance(existing, dict) else {}
+                for language, payload in value.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    current = merged.get(language)
+                    if isinstance(current, dict):
+                        combined = dict(current)
+                        combined.update(payload)
+                        merged[language] = combined
+                    else:
+                        merged[language] = dict(payload)
+                base[key] = merged
+                continue
+            base[key] = value
+
+    def _normalize_project_insights(
+        self, project_insights: dict[str, object]
+    ) -> dict[str, object]:
+        normalized = dict(project_insights)
+        raw_language_insights = normalized.get("language_insights", {})
+        language_insights: dict[str, dict[str, object]] = {}
+        if isinstance(raw_language_insights, dict):
+            for language, payload in raw_language_insights.items():
+                if isinstance(payload, dict):
+                    language_insights[str(language)] = dict(payload)
+
+        aggregate_summary: dict[str, str] = {}
+        aggregate_notes: dict[str, list[str]] = {}
+        aggregate_high_risk: dict[str, list[str]] = {}
+
+        for language, payload in language_insights.items():
+            summary = payload.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                aggregate_summary[language] = summary.strip()
+
+            notes = payload.get("migration_notes")
+            if isinstance(notes, list):
+                aggregate_notes[language] = [
+                    str(item).strip() for item in notes if str(item).strip()
+                ]
+            else:
+                aggregate_notes[language] = []
+
+            files = payload.get("high_risk_files")
+            if isinstance(files, list):
+                aggregate_high_risk[language] = sorted(
+                    {str(item).strip() for item in files if str(item).strip()}
+                )
+            else:
+                aggregate_high_risk[language] = []
+
+        normalized["language_insights"] = language_insights
+        normalized["summary_by_language"] = aggregate_summary
+        normalized["migration_notes_by_language"] = aggregate_notes
+        normalized["high_risk_files_by_language"] = aggregate_high_risk
+        normalized["summary"] = self._merge_global_summary(
+            normalized.get("summary"), aggregate_summary
+        )
+        normalized["migration_notes"] = self._merge_global_notes(
+            normalized.get("migration_notes"), aggregate_notes
+        )
+        normalized["high_risk_files"] = self._merge_global_files(
+            normalized.get("high_risk_files"), aggregate_high_risk
+        )
+        return normalized
+
+    def _merge_global_summary(
+        self, existing_summary: object, summary_by_language: dict[str, str]
+    ) -> str:
+        parts: list[str] = []
+        if isinstance(existing_summary, str) and existing_summary.strip():
+            parts.append(existing_summary.strip())
+        for language, summary in sorted(summary_by_language.items()):
+            labeled = f"[{language}] {summary}"
+            if labeled not in parts:
+                parts.append(labeled)
+        return "\n\n".join(parts)
+
+    def _merge_global_notes(
+        self,
+        existing_notes: object,
+        notes_by_language: dict[str, list[str]],
+    ) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        if isinstance(existing_notes, list):
+            for item in existing_notes:
+                text = str(item).strip()
+                if text and text not in seen:
+                    seen.add(text)
+                    merged.append(text)
+        for language, notes in sorted(notes_by_language.items()):
+            for note in notes:
+                labeled = f"[{language}] {note}"
+                if labeled not in seen:
+                    seen.add(labeled)
+                    merged.append(labeled)
+        return merged
+
+    def _merge_global_files(
+        self,
+        existing_files: object,
+        files_by_language: dict[str, list[str]],
+    ) -> list[str]:
+        merged: set[str] = set()
+        if isinstance(existing_files, list):
+            merged.update(
+                str(item).strip() for item in existing_files if str(item).strip()
+            )
+        for files in files_by_language.values():
+            merged.update(str(item).strip() for item in files if str(item).strip())
+        return sorted(merged)

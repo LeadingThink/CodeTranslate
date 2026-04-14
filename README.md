@@ -12,6 +12,8 @@
 - migrator / tester / verifier / repairer / orchestrator 主循环骨架
 - `uv` 管理的 CLI 工程
 - 多语言 adapter 架构骨架，当前已落地 Python / Node.js / Java / Go（Java / Python / Node.js / Go 均补充了复杂静态启发式分析）
+- Java 项目补充 Maven 多模块识别、模块布局采样与 baseline build/test 执行结果归档
+- unit context 补充相关测试文件、资源文件、Maven 模块信息与 Java->Python 迁移提示
 
 ## API Key 放置方式
 
@@ -74,6 +76,12 @@ uv run codetranslate \
 - `.demo-workspace/patches`
 - `.demo-workspace/reports`
 - `.demo-target/`
+
+针对 Java / Maven 项目，额外会生成：
+
+- `analysis/maven_modules.json`
+- `analysis/project_layout.json`
+- `analysis/project_insights.json` 中的 `java_baseline`
 
 ## 当前仍未完整实现
 

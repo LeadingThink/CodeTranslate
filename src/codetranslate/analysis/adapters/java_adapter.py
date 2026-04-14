@@ -101,6 +101,17 @@ MIDDLEWARE_HINTS: dict[str, tuple[str, str]] = {
     "JpaRepository": ("database", "orm_repository"),
 }
 
+
+def _project_module_name(relative_path: str, scan: ProjectScanSummary) -> str | None:
+    for project_module in scan.maven_modules:
+        prefix = project_module.relative_path.strip("./")
+        if not prefix:
+            continue
+        if relative_path == prefix or relative_path.startswith(prefix + "/"):
+            return project_module.name
+    return None
+
+
 JAVA_KEYWORDS = {
     "if",
     "for",
@@ -178,7 +189,7 @@ class JavaAdapter:
     def analyze_project(
         self, project_root: Path, scan: ProjectScanSummary
     ) -> LanguageAnalysis:
-        parsed_modules = self._parse_modules(project_root)
+        parsed_modules = self._parse_modules(project_root, scan)
         symbol_index = {
             symbol.symbol_id: symbol
             for parsed in parsed_modules
@@ -244,7 +255,9 @@ class JavaAdapter:
         )
         return result
 
-    def _parse_modules(self, project_root: Path) -> list[JavaModuleParseResult]:
+    def _parse_modules(
+        self, project_root: Path, scan: ProjectScanSummary
+    ) -> list[JavaModuleParseResult]:
         parsed_modules: list[JavaModuleParseResult] = []
         for path in project_root.rglob("*.java"):
             if any(
@@ -253,11 +266,15 @@ class JavaAdapter:
             ):
                 continue
             source = path.read_text(encoding="utf-8", errors="ignore")
-            parsed_modules.append(self._analyze_file(project_root, path, source))
+            parsed_modules.append(self._analyze_file(project_root, path, source, scan))
         return parsed_modules
 
     def _analyze_file(
-        self, project_root: Path, path: Path, source: str
+        self,
+        project_root: Path,
+        path: Path,
+        source: str,
+        scan: ProjectScanSummary,
     ) -> JavaModuleParseResult:
         package_name = self._package_name(source)
         module = f"{package_name}.{path.stem}" if package_name else path.stem
@@ -271,6 +288,7 @@ class JavaAdapter:
                 language="java",
                 module=module,
                 role="test" if self._is_test_file(path) else "source",
+                project_module=_project_module_name(relative, scan),
             ),
         )
 

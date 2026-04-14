@@ -101,6 +101,7 @@ class MigrationPlanner:
             language=source_file.language,
             target_language=target_language,
             module=source_file.module,
+            project_module=source_file.project_module,
             file_path=str(source_path),
             target_file_path=str(target_path / target_relative_path),
             kind="file",

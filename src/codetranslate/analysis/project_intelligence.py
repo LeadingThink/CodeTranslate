@@ -37,12 +37,16 @@ class ProjectIntelligenceAnalyzer:
         self.model = self._build_model()
         self.agent = self._build_agent() if self.model is not None else None
 
-    def enrich(self, analysis: AnalysisResult, request: MigrationRequest) -> dict[str, Any]:
+    def enrich(
+        self, analysis: AnalysisResult, request: MigrationRequest
+    ) -> dict[str, Any]:
         if self.agent is None:
             return {}
         prompt = self._build_prompt(analysis, request)
         logger.info("Analysis LLM Request\n%s", _truncate_block(prompt))
-        get_reporter().stage("Analyze Project", "Inferring entrypoints and startup chain")
+        get_reporter().stage(
+            "Analyze Project", "Inferring entrypoints and startup chain"
+        )
         try:
             result = self.agent.invoke(
                 {"messages": [{"role": "user", "content": prompt}]},
@@ -50,7 +54,11 @@ class ProjectIntelligenceAnalyzer:
             )
         except Exception as exc:
             logger.warning("Analysis agent failed: %s", exc)
-            get_reporter().result("Analyze Project", "warning", f"LLM project understanding unavailable: {exc}")
+            get_reporter().result(
+                "Analyze Project",
+                "warning",
+                f"LLM project understanding unavailable: {exc}",
+            )
             return {}
         content = self._extract_final_text(result)
         logger.info("Analysis LLM Response\n%s", _truncate_block(content))
@@ -86,6 +94,18 @@ class ProjectIntelligenceAnalyzer:
         languages = analysis.scan.languages
         frameworks = analysis.scan.frameworks
         build_tools = analysis.scan.build_tools
+        maven_modules = [
+            {
+                "name": module.name,
+                "relative_path": module.relative_path,
+                "packaging": module.packaging,
+                "dependencies": module.dependencies,
+                "source_roots": module.source_roots,
+                "test_roots": module.test_roots,
+                "resource_roots": module.resource_roots,
+            }
+            for module in analysis.scan.maven_modules[:20]
+        ]
         return (
             f"Project root: {analysis.project_root}\n"
             f"User-selected source language: {request.source_language}\n"
@@ -96,9 +116,12 @@ class ProjectIntelligenceAnalyzer:
             f"Languages: {languages}\n"
             f"Frameworks: {frameworks}\n"
             f"Build tools: {build_tools}\n"
+            f"Maven modules: {json.dumps(maven_modules, ensure_ascii=False)}\n"
             f"Static entrypoints: {entrypoints}\n"
             f"Candidate entrypoints: {candidates}\n"
             f"Config files: {config_files}\n"
+            f"Test files sample: {analysis.scan.test_files[:40]}\n"
+            f"Resource files sample: {analysis.scan.resource_files[:40]}\n"
             f"Source files sample: {source_files}\n"
             "Use tools to inspect the real project structure and infer startup chain and migration priorities for the user-selected source language only. "
             "Check scripts, manifests, shell files, and runtime bootstrap files when relevant."
@@ -113,7 +136,11 @@ class ProjectIntelligenceAnalyzer:
             if isinstance(content, list):
                 text_parts = []
                 for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "text"
+                        and item.get("text")
+                    ):
                         text_parts.append(str(item["text"]))
                 if text_parts:
                     return "\n".join(text_parts).strip()
@@ -122,10 +149,18 @@ class ProjectIntelligenceAnalyzer:
     def _parse_insights(self, content: str) -> dict[str, Any]:
         payload = _parse_json_object(content)
         if payload is None:
-            return {"summary": content, "inferred_entrypoints": [], "startup_files": [], "high_risk_files": [], "migration_notes": []}
+            return {
+                "summary": content,
+                "inferred_entrypoints": [],
+                "startup_files": [],
+                "high_risk_files": [],
+                "migration_notes": [],
+            }
         return {
             "summary": str(payload.get("summary", "")),
-            "inferred_entrypoints": _normalize_string_list(payload.get("inferred_entrypoints")),
+            "inferred_entrypoints": _normalize_string_list(
+                payload.get("inferred_entrypoints")
+            ),
             "startup_files": _normalize_string_list(payload.get("startup_files")),
             "high_risk_files": _normalize_string_list(payload.get("high_risk_files")),
             "migration_notes": _normalize_string_list(payload.get("migration_notes")),
@@ -138,13 +173,27 @@ def _build_analysis_tools() -> list[Any]:
         """List entries under a directory path."""
         resolved = _resolve_analysis_path(path, runtime.context)
         if not resolved.exists():
-            return json.dumps({"path": str(resolved), "exists": False, "entries": []}, ensure_ascii=False)
+            return json.dumps(
+                {"path": str(resolved), "exists": False, "entries": []},
+                ensure_ascii=False,
+            )
         entries = [
-            {"name": child.name, "path": str(child), "type": "dir" if child.is_dir() else "file"}
+            {
+                "name": child.name,
+                "path": str(child),
+                "type": "dir" if child.is_dir() else "file",
+            }
             for child in sorted(resolved.iterdir(), key=lambda item: item.name)
         ]
-        payload = json.dumps({"path": str(resolved), "exists": True, "entries": entries}, ensure_ascii=False)
-        logger.info("Analysis Tool `list_dir`\npath=%s\nresult=%s", resolved, _truncate_block(payload))
+        payload = json.dumps(
+            {"path": str(resolved), "exists": True, "entries": entries},
+            ensure_ascii=False,
+        )
+        logger.info(
+            "Analysis Tool `list_dir`\npath=%s\nresult=%s",
+            resolved,
+            _truncate_block(payload),
+        )
         get_reporter().tool("list_dir", str(resolved), "ok")
         return payload
 
@@ -153,7 +202,11 @@ def _build_analysis_tools() -> list[Any]:
         """Read a UTF-8 text file."""
         resolved = _resolve_analysis_path(path, runtime.context)
         content = resolved.read_text(encoding="utf-8", errors="ignore")
-        logger.info("Analysis Tool `read_file`\npath=%s\ncontent=%s", resolved, _truncate_block(content))
+        logger.info(
+            "Analysis Tool `read_file`\npath=%s\ncontent=%s",
+            resolved,
+            _truncate_block(content),
+        )
         get_reporter().tool("read_file", str(resolved), "ok")
         return content
 
@@ -161,7 +214,9 @@ def _build_analysis_tools() -> list[Any]:
     def exists(path: str, runtime: ToolRuntime[AnalysisAgentContext]) -> str:
         """Check whether a path exists."""
         resolved = _resolve_analysis_path(path, runtime.context)
-        payload = json.dumps({"path": str(resolved), "exists": resolved.exists()}, ensure_ascii=False)
+        payload = json.dumps(
+            {"path": str(resolved), "exists": resolved.exists()}, ensure_ascii=False
+        )
         logger.info("Analysis Tool `exists`\npath=%s\nresult=%s", resolved, payload)
         get_reporter().tool("exists", str(resolved), "ok")
         return payload
@@ -176,18 +231,32 @@ def _build_analysis_tools() -> list[Any]:
                 break
             if not path.is_file():
                 continue
-            if any(part.startswith(".git") or part == "__pycache__" or part == ".venv" for part in path.parts):
+            if any(
+                part.startswith(".git") or part == "__pycache__" or part == ".venv"
+                for part in path.parts
+            ):
                 continue
             try:
-                for index, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
+                for index, line in enumerate(
+                    path.read_text(encoding="utf-8", errors="ignore").splitlines(),
+                    start=1,
+                ):
                     if pattern in line:
-                        matches.append({"path": str(path), "line": index, "text": line.strip()})
+                        matches.append(
+                            {"path": str(path), "line": index, "text": line.strip()}
+                        )
                         if len(matches) >= 25:
                             break
             except Exception:
                 continue
-        payload = json.dumps({"pattern": pattern, "matches": matches}, ensure_ascii=False)
-        logger.info("Analysis Tool `search_text`\npattern=%s\nresult=%s", pattern, _truncate_block(payload))
+        payload = json.dumps(
+            {"pattern": pattern, "matches": matches}, ensure_ascii=False
+        )
+        logger.info(
+            "Analysis Tool `search_text`\npattern=%s\nresult=%s",
+            pattern,
+            _truncate_block(payload),
+        )
         get_reporter().tool("search_text", pattern, "ok")
         return payload
 

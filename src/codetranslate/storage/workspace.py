@@ -52,7 +52,10 @@ class WorkspaceManager:
     def write_json(self, relative_path: str, data: Any) -> Path:
         path = self.root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(to_jsonable(data), indent=2, ensure_ascii=False), encoding="utf-8")
+        path.write_text(
+            json.dumps(to_jsonable(data), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         return path
 
     def read_json(self, relative_path: str) -> Any:
@@ -67,7 +70,24 @@ class WorkspaceManager:
 
     def save_scan(self, scan: ProjectScanSummary) -> None:
         self.write_json("analysis/project_scan.json", scan)
-        self.write_json("analysis/entrypoints.json", {"entrypoints": scan.entrypoints, "candidate_entrypoints": scan.candidate_entrypoints})
+        self.write_json(
+            "analysis/entrypoints.json",
+            {
+                "entrypoints": scan.entrypoints,
+                "candidate_entrypoints": scan.candidate_entrypoints,
+            },
+        )
+        self.write_json("analysis/maven_modules.json", scan.maven_modules)
+        self.write_json(
+            "analysis/project_layout.json",
+            {
+                "source_directories": scan.source_directories,
+                "test_directories": scan.test_directories,
+                "resource_directories": scan.resource_directories,
+                "test_files": scan.test_files,
+                "resource_files": scan.resource_files,
+            },
+        )
 
     def save_analysis(self, result: AnalysisResult) -> None:
         self.write_json("analysis/source_files.json", result.source_files)
@@ -118,7 +138,9 @@ class WorkspaceManager:
                 for unit in units
             },
         )
-        ready_units = [unit.unit_id for unit in units if unit.status == UnitStatus.READY]
+        ready_units = [
+            unit.unit_id for unit in units if unit.status == UnitStatus.READY
+        ]
         self.write_json("state/ready_queue.json", {"ready_units": ready_units})
 
     def save_repair_record(self, record: RepairRecord) -> None:
@@ -149,10 +171,21 @@ class WorkspaceManager:
             normalized = {
                 **item,
                 "risk_level": item.get("risk_level", "low"),
-                "target_language": item.get("target_language", item.get("language", "python")),
-                "status": UnitStatus(status_row.get("status", item.get("status", UnitStatus.DISCOVERED.value))),
-                "retry_count": status_row.get("retry_count", item.get("retry_count", 0)),
-                "failure_reason": status_row.get("failure_reason", item.get("failure_reason")),
+                "target_language": item.get(
+                    "target_language", item.get("language", "python")
+                ),
+                "project_module": item.get("project_module"),
+                "status": UnitStatus(
+                    status_row.get(
+                        "status", item.get("status", UnitStatus.DISCOVERED.value)
+                    )
+                ),
+                "retry_count": status_row.get(
+                    "retry_count", item.get("retry_count", 0)
+                ),
+                "failure_reason": status_row.get(
+                    "failure_reason", item.get("failure_reason")
+                ),
             }
             units.append(MigrationUnit(**normalized))
         return units
@@ -165,7 +198,9 @@ class WorkspaceManager:
             initialized=True,
             analyzed=True,
             planned=True,
-            blocked_units=[unit.unit_id for unit in units if unit.status == UnitStatus.BLOCKED],
+            blocked_units=[
+                unit.unit_id for unit in units if unit.status == UnitStatus.BLOCKED
+            ],
         )
         self.save_pipeline_state(state)
 
@@ -178,8 +213,12 @@ class WorkspaceManager:
             analyzed=True,
             planned=True,
             completed_units=sum(unit.status == UnitStatus.VERIFIED for unit in units),
-            failed_units=[unit.unit_id for unit in units if unit.status == UnitStatus.FAILED],
-            blocked_units=[unit.unit_id for unit in units if unit.status == UnitStatus.BLOCKED],
+            failed_units=[
+                unit.unit_id for unit in units if unit.status == UnitStatus.FAILED
+            ],
+            blocked_units=[
+                unit.unit_id for unit in units if unit.status == UnitStatus.BLOCKED
+            ],
         )
         self.save_pipeline_state(state)
         return state

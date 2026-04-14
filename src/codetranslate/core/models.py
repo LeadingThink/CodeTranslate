@@ -44,10 +44,24 @@ class ProjectPaths:
 
 
 @dataclass(slots=True)
+class MavenModuleRecord:
+    name: str
+    relative_path: str
+    pom_path: str
+    packaging: str = "jar"
+    parent: str | None = None
+    dependencies: list[str] = field(default_factory=list)
+    source_roots: list[str] = field(default_factory=list)
+    test_roots: list[str] = field(default_factory=list)
+    resource_roots: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ProjectScanSummary:
     project_root: str
     source_directories: list[str]
     test_directories: list[str]
+    resource_directories: list[str]
     config_files: list[str]
     languages: list[str]
     frameworks: list[str]
@@ -56,6 +70,9 @@ class ProjectScanSummary:
     entrypoints: list[str]
     candidate_entrypoints: list[str]
     files_scanned: int
+    maven_modules: list[MavenModuleRecord] = field(default_factory=list)
+    test_files: list[str] = field(default_factory=list)
+    resource_files: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -64,6 +81,7 @@ class SourceFileRecord:
     language: str
     module: str
     role: str
+    project_module: str | None = None
 
 
 @dataclass(slots=True)
@@ -170,6 +188,7 @@ class MigrationUnit:
     kind: str
     source_code: str
     signature: str | None
+    project_module: str | None = None
     dependencies: list[str] = field(default_factory=list)
     dependents: list[str] = field(default_factory=list)
     risk_level: RiskLevel = RiskLevel.LOW
@@ -197,6 +216,10 @@ class UnitContext:
     target_file_path: str
     target_constraints: dict[str, Any]
     test_requirements: list[str]
+    related_tests: list[dict[str, str]] = field(default_factory=list)
+    related_resources: list[dict[str, str]] = field(default_factory=list)
+    build_context: dict[str, Any] = field(default_factory=dict)
+    java_migration_hints: list[str] = field(default_factory=list)
     latest_failure_log: str | None = None
 
 
@@ -239,7 +262,8 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value):
-        return {key: to_jsonable(item) for key, item in asdict(value).items()}
+        serialized = asdict(value)  # pyright: ignore[reportArgumentType]
+        return {key: to_jsonable(item) for key, item in serialized.items()}
     if isinstance(value, dict):
         return {str(key): to_jsonable(item) for key, item in value.items()}
     if isinstance(value, list):

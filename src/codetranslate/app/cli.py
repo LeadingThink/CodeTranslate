@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from pathlib import Path
 
+from ..core.path_utils import normalize_user_path
 from .interactive import start_interactive_session
 from ..core.logging_utils import configure_logging
 from ..core.models import MigrationRequest, ProjectPaths
@@ -60,9 +60,9 @@ def main() -> None:
         exclude_paths=args.exclude_path,
     )
     paths = ProjectPaths(
-        source_root=str(Path(args.project_root).resolve()),
-        workspace_root=str(Path(args.workspace_root).resolve()),
-        target_root=str(Path(args.target_root).resolve()),
+        source_root=str(normalize_user_path(args.project_root).resolve()),
+        workspace_root=str(normalize_user_path(args.workspace_root).resolve()),
+        target_root=str(normalize_user_path(args.target_root).resolve()),
         request=request,
     )
     orchestrator = MigrationOrchestrator(paths)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 from ..core.models import AnalysisResult, MigrationUnit, UnitContext
 
@@ -13,15 +14,27 @@ class UnitContextBuilder:
         units_by_id: dict[str, MigrationUnit],
     ) -> UnitContext:
         source_file_content = Path(unit.file_path).read_text(encoding="utf-8")
-        models = [model.name for model in analysis.models if model.file_path == unit.file_path]
-        module_symbols = [symbol for symbol in analysis.symbols if symbol.file_path == unit.file_path]
+        models = [
+            model.name for model in analysis.models if model.file_path == unit.file_path
+        ]
+        module_symbols = [
+            symbol for symbol in analysis.symbols if symbol.file_path == unit.file_path
+        ]
         dependency_summaries = []
         for dependency_id in unit.dependencies:
             dependency = units_by_id[dependency_id]
-            dependency_summaries.append(f"{dependency.name}: migrated to {dependency.target_file_path}")
+            dependency_summaries.append(
+                f"{dependency.name}: migrated to {dependency.target_file_path}"
+            )
         module_imports = self._extract_module_imports(source_file_content)
         decorators = self._resolve_decorators(unit, module_symbols)
-        module_level_context = self._build_module_level_context(module_symbols, models, unit)
+        module_level_context = self._build_module_level_context(
+            module_symbols, models, unit
+        )
+        related_tests = self._related_tests(unit, analysis)
+        related_resources = self._related_resources(unit, analysis)
+        build_context = self._build_context(unit, analysis)
+        java_migration_hints = self._java_migration_hints(unit, analysis)
 
         return UnitContext(
             unit_id=unit.unit_id,
@@ -44,6 +57,10 @@ class UnitContextBuilder:
                 "preserve_behavior": True,
             },
             test_requirements=unit.test_requirements,
+            related_tests=related_tests,
+            related_resources=related_resources,
+            build_context=build_context,
+            java_migration_hints=java_migration_hints,
             latest_failure_log=unit.failure_reason,
         )
 
@@ -55,7 +72,9 @@ class UnitContextBuilder:
                 imports.append(line)
         return imports
 
-    def _resolve_decorators(self, unit: MigrationUnit, module_symbols: list[object]) -> list[str]:
+    def _resolve_decorators(
+        self, unit: MigrationUnit, module_symbols: Sequence[object]
+    ) -> list[str]:
         if unit.kind in {"module", "file"}:
             decorators: list[str] = []
             for symbol in module_symbols:
@@ -66,11 +85,17 @@ class UnitContextBuilder:
                 return list(getattr(symbol, "decorators", []))
         return []
 
-    def _build_module_level_context(self, module_symbols: list[object], models: list[str], unit: MigrationUnit) -> str:
+    def _build_module_level_context(
+        self, module_symbols: Sequence[object], models: list[str], unit: MigrationUnit
+    ) -> str:
         lines: list[str] = []
-        lines.append(f"execution_unit={unit.kind} module={unit.module} file={unit.file_path}")
+        lines.append(
+            f"execution_unit={unit.kind} module={unit.module} file={unit.file_path}"
+        )
         for symbol in module_symbols:
-            signature = getattr(symbol, "signature", None) or getattr(symbol, "name", "unknown")
+            signature = getattr(symbol, "signature", None) or getattr(
+                symbol, "name", "unknown"
+            )
             decorators = getattr(symbol, "decorators", [])
             prefix = f"{getattr(symbol, 'kind', 'symbol')} {signature}"
             if decorators:
@@ -79,3 +104,66 @@ class UnitContextBuilder:
         if models:
             lines.append(f"models={models}")
         return "\n".join(lines)
+
+    def _related_tests(
+        self, unit: MigrationUnit, analysis: AnalysisResult
+    ) -> list[dict[str, str]]:
+        stem = Path(unit.file_path).stem.lower()
+        related: list[dict[str, str]] = []
+        for test_path in analysis.scan.test_files:
+            test_stem = Path(test_path).stem.lower()
+            if stem in test_stem or test_stem.replace("test", "") in stem:
+                related.append({"path": test_path, "kind": "test_file"})
+        return related[:12]
+
+    def _related_resources(
+        self, unit: MigrationUnit, analysis: AnalysisResult
+    ) -> list[dict[str, str]]:
+        segments = {part.lower() for part in Path(unit.file_path).parts if part}
+        related: list[dict[str, str]] = []
+        for resource_path in analysis.scan.resource_files:
+            resource_segments = {
+                part.lower() for part in Path(resource_path).parts if part
+            }
+            if segments.intersection(resource_segments):
+                related.append({"path": resource_path, "kind": "resource_file"})
+        return related[:12]
+
+    def _build_context(
+        self, unit: MigrationUnit, analysis: AnalysisResult
+    ) -> dict[str, object]:
+        baseline = analysis.project_insights.get("java_baseline", {})
+        module_info = {}
+        for module in analysis.scan.maven_modules:
+            if module.name == unit.project_module:
+                module_info = {
+                    "name": module.name,
+                    "relative_path": module.relative_path,
+                    "packaging": module.packaging,
+                    "dependencies": module.dependencies,
+                    "source_roots": module.source_roots,
+                    "test_roots": module.test_roots,
+                    "resource_roots": module.resource_roots,
+                }
+                break
+        return {
+            "project_module": unit.project_module,
+            "maven_module": module_info,
+            "java_baseline": baseline,
+        }
+
+    def _java_migration_hints(
+        self, unit: MigrationUnit, analysis: AnalysisResult
+    ) -> list[str]:
+        if unit.language != "java" or unit.target_language != "python":
+            return []
+        hints = [
+            "Translate Java classes into idiomatic Python classes; prefer dataclasses for immutable/value-oriented state.",
+            "Map interfaces and abstract classes to abc.ABC or Protocol when contract clarity matters.",
+            "Replace Java collections and streams with Python list/dict/set and comprehensions while preserving ordering semantics.",
+            "Preserve exception and validation semantics explicitly; do not silently drop checked-error behavior.",
+            "Use module-level helpers instead of static utility classes when no object state is required.",
+        ]
+        notes = analysis.project_insights.get("migration_notes_by_language", {})
+        java_notes = notes.get("java", []) if isinstance(notes, dict) else []
+        return hints + [str(note) for note in java_notes[:8]]

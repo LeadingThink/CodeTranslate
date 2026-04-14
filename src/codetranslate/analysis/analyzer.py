@@ -8,6 +8,7 @@ from ..core.models import (
     ProjectIR,
     ProjectScanSummary,
 )
+from .build_analysis import JavaBaselineRunner
 from .language_registry import LanguageRegistry
 from .project_intelligence import ProjectIntelligenceAnalyzer
 
@@ -20,6 +21,7 @@ class ProjectAnalyzer:
     ) -> None:
         self.registry = registry or LanguageRegistry()
         self.intelligence = intelligence
+        self.baseline_runner = JavaBaselineRunner()
 
     def analyze(
         self, project_root: str, scan: ProjectScanSummary, request: MigrationRequest
@@ -53,6 +55,22 @@ class ProjectAnalyzer:
             )
 
         project_insights = self._normalize_project_insights(project_insights)
+        if request.source_language == "java":
+            project_insights["java_baseline"] = self.baseline_runner.run(
+                root, scan.maven_modules
+            )
+            project_insights["maven_modules"] = [
+                {
+                    "name": module.name,
+                    "relative_path": module.relative_path,
+                    "packaging": module.packaging,
+                    "dependencies": module.dependencies,
+                    "source_roots": module.source_roots,
+                    "test_roots": module.test_roots,
+                    "resource_roots": module.resource_roots,
+                }
+                for module in scan.maven_modules
+            ]
 
         result = AnalysisResult(
             project_root=str(root),

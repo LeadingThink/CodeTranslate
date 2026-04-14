@@ -61,7 +61,9 @@ class LLMClient:
             required_paths=[test_path],
         )
 
-    def repair_artifact(self, context: UnitContext, failure_log: str, test_path: str) -> str:
+    def repair_artifact(
+        self, context: UnitContext, failure_log: str, test_path: str
+    ) -> str:
         return self._run_agent(
             task=self._build_repair_task(context, failure_log, test_path),
             required_paths=[context.target_file_path, test_path],
@@ -99,7 +101,9 @@ class LLMClient:
 
         missing = [path for path in required_paths if not Path(path).exists()]
         if missing:
-            raise RuntimeError(f"Agent finished without writing required files: {missing}")
+            raise RuntimeError(
+                f"Agent finished without writing required files: {missing}"
+            )
         final_text = self._extract_final_text(result)
         logger.info("LLM Response\n%s", _truncate_block(final_text))
         get_reporter().model("response", final_text)
@@ -114,7 +118,11 @@ class LLMClient:
             if isinstance(content, list):
                 text_parts = []
                 for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "text"
+                        and item.get("text")
+                    ):
                         text_parts.append(str(item["text"]))
                 if text_parts:
                     return "\n".join(text_parts).strip()
@@ -141,51 +149,70 @@ class LLMClient:
         print(response.content, file=sys.stderr)
         print("--- additional_kwargs ---", file=sys.stderr)
         print(
-            json.dumps(response.additional_kwargs, indent=2, ensure_ascii=False, default=str),
+            json.dumps(
+                response.additional_kwargs, indent=2, ensure_ascii=False, default=str
+            ),
             file=sys.stderr,
         )
         print("--- response_metadata ---", file=sys.stderr)
         print(
-            json.dumps(response.response_metadata, indent=2, ensure_ascii=False, default=str),
+            json.dumps(
+                response.response_metadata, indent=2, ensure_ascii=False, default=str
+            ),
             file=sys.stderr,
         )
         print("=== CODETRANSLATE RAW MODEL RESPONSE END ===", file=sys.stderr)
 
     def _build_migration_task(self, context: UnitContext) -> str:
-        fence = self._code_fence_language(context.target_constraints.get("language", "python"))
+        source_language = context.target_constraints.get("source_language", "python")
+        target_language = context.target_constraints.get("language", "python")
+        source_fence = self._code_fence_language(source_language)
         return (
             "Migrate one source file into the target file by using tools.\n"
             f"Unit: {context.unit_id}\n"
             f"Summary: {context.summary}\n"
-            f"User-selected source language: {context.target_constraints.get('source_language')}\n"
-            f"User-selected target language: {context.target_constraints.get('language')}\n"
+            f"User-selected source language: {source_language}\n"
+            f"User-selected target language: {target_language}\n"
             f"Target path: {context.target_file_path}\n"
             f"Decorators: {json.dumps(context.decorators, ensure_ascii=False)}\n"
             f"Module imports: {json.dumps(context.module_imports, ensure_ascii=False)}\n"
             f"Dependency summaries: {json.dumps(context.dependency_summaries, ensure_ascii=False)}\n"
+            f"Related tests: {json.dumps(context.related_tests, ensure_ascii=False)}\n"
+            f"Related resources: {json.dumps(context.related_resources, ensure_ascii=False)}\n"
+            f"Build context: {json.dumps(context.build_context, ensure_ascii=False)}\n"
+            f"Java-to-Python migration hints: {json.dumps(context.java_migration_hints, ensure_ascii=False)}\n"
             f"Module-level context:\n{context.module_level_context}\n"
             "Requirements:\n"
             f"- You must write the final migrated file to {context.target_file_path} using write_file.\n"
             "- Preserve complete file-level behavior and cross-symbol consistency.\n"
+            "- First call exists on the target path before attempting to read it.\n"
+            "- Only call read_file on the target path if exists reports exists=true.\n"
+            "- If the target file does not exist yet, do not call read_file on it; write the full migrated file directly.\n"
             "- If the target file exists, read it first and merge carefully at file scope.\n"
             "- Do not put tests or markdown into the target source file.\n"
+            "- Preserve semantics covered by related tests and resource fixtures when they exist.\n"
             f"- Before finishing, call validate_file on {context.target_file_path}.\n\n"
-            f"Full source file:\n```{fence}\n{context.source_file_content}\n```\n\n"
-            f"Source code:\n```{fence}\n{context.source_code}\n```"
+            f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
+            f"Source code:\n```{source_fence}\n{context.source_code}\n```"
         )
 
     def _build_test_task(self, context: UnitContext, test_path: str) -> str:
-        fence = self._code_fence_language(context.target_constraints.get("language", "python"))
+        source_language = context.target_constraints.get("source_language", "python")
+        target_language = context.target_constraints.get("language", "python")
+        source_fence = self._code_fence_language(source_language)
         return (
             "Generate a test file for one migrated source file by using tools.\n"
             f"Unit: {context.unit_id}\n"
             f"Summary: {context.summary}\n"
-            f"User-selected source language: {context.target_constraints.get('source_language')}\n"
-            f"User-selected target language: {context.target_constraints.get('language')}\n"
+            f"User-selected source language: {source_language}\n"
+            f"User-selected target language: {target_language}\n"
             f"Target file: {context.target_file_path}\n"
             f"Test path: {test_path}\n"
             f"Decorators: {json.dumps(context.decorators, ensure_ascii=False)}\n"
             f"Module imports: {json.dumps(context.module_imports, ensure_ascii=False)}\n"
+            f"Related tests: {json.dumps(context.related_tests, ensure_ascii=False)}\n"
+            f"Related resources: {json.dumps(context.related_resources, ensure_ascii=False)}\n"
+            f"Build context: {json.dumps(context.build_context, ensure_ascii=False)}\n"
             f"Module-level context:\n{context.module_level_context}\n"
             f"Test requirements: {json.dumps(context.test_requirements, ensure_ascii=False)}\n"
             "Requirements:\n"
@@ -194,21 +221,28 @@ class LLMClient:
             f"- Use this test style guidance: {self._test_style_for_language(context.target_constraints.get('language', 'python'))}.\n"
             "- Prefer validating exported file behavior and cross-symbol contracts over isolated fragment behavior.\n"
             f"- Before finishing, call validate_file on {test_path}.\n\n"
-            f"Full source file:\n```{fence}\n{context.source_file_content}\n```\n\n"
-            f"Source code:\n```{fence}\n{context.source_code}\n```"
+            f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
+            f"Source code:\n```{source_fence}\n{context.source_code}\n```"
         )
 
-    def _build_repair_task(self, context: UnitContext, failure_log: str, test_path: str) -> str:
-        fence = self._code_fence_language(context.target_constraints.get("language", "python"))
+    def _build_repair_task(
+        self, context: UnitContext, failure_log: str, test_path: str
+    ) -> str:
+        source_language = context.target_constraints.get("source_language", "python")
+        target_language = context.target_constraints.get("language", "python")
+        source_fence = self._code_fence_language(source_language)
         return (
             "Repair the smallest failing file by using tools while preserving file-level source contracts.\n"
             f"Unit: {context.unit_id}\n"
-            f"User-selected source language: {context.target_constraints.get('source_language')}\n"
-            f"User-selected target language: {context.target_constraints.get('language')}\n"
+            f"User-selected source language: {source_language}\n"
+            f"User-selected target language: {target_language}\n"
             f"Target file: {context.target_file_path}\n"
             f"Test file: {test_path}\n"
             f"Decorators: {json.dumps(context.decorators, ensure_ascii=False)}\n"
             f"Module imports: {json.dumps(context.module_imports, ensure_ascii=False)}\n"
+            f"Related tests: {json.dumps(context.related_tests, ensure_ascii=False)}\n"
+            f"Related resources: {json.dumps(context.related_resources, ensure_ascii=False)}\n"
+            f"Build context: {json.dumps(context.build_context, ensure_ascii=False)}\n"
             f"Module-level context:\n{context.module_level_context}\n"
             "Requirements:\n"
             "- Read the relevant existing file before editing.\n"
@@ -217,8 +251,8 @@ class LLMClient:
             f"- Keep tests aligned with this guidance: {self._test_style_for_language(context.target_constraints.get('language', 'python'))}.\n"
             "- Validate any source or test file you changed before finishing using validate_file.\n\n"
             f"Failure log:\n```text\n{failure_log[:3000]}\n```\n\n"
-            f"Full source file:\n```{fence}\n{context.source_file_content}\n```\n\n"
-            f"Original source code:\n```{fence}\n{context.source_code}\n```"
+            f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
+            f"Original source code:\n```{source_fence}\n{context.source_code}\n```"
         )
 
     def _test_style_for_language(self, language: str) -> str:
@@ -227,6 +261,10 @@ class LLMClient:
         return "prefer a standalone unittest script and avoid pytest unless the project contract explicitly requires it"
 
     def _code_fence_language(self, language: str) -> str:
+        if language == "java":
+            return "java"
+        if language == "go":
+            return "go"
         if language == "nodejs":
             return "typescript"
         return "python"
@@ -238,7 +276,10 @@ def _build_agent_tools() -> list[Any]:
         """List entries under a directory path."""
         resolved = _resolve_path(path, runtime.context)
         if not resolved.exists():
-            payload = json.dumps({"path": str(resolved), "exists": False, "entries": []}, ensure_ascii=False)
+            payload = json.dumps(
+                {"path": str(resolved), "exists": False, "entries": []},
+                ensure_ascii=False,
+            )
             logger.info("Tool Call `list_dir`\npath=%s\nresult=%s", resolved, payload)
             get_reporter().tool("list_dir", str(resolved), "ok")
             return payload
@@ -252,8 +293,15 @@ def _build_agent_tools() -> list[Any]:
             }
             for child in sorted(resolved.iterdir(), key=lambda item: item.name)
         ]
-        payload = json.dumps({"path": str(resolved), "exists": True, "entries": entries}, ensure_ascii=False)
-        logger.info("Tool Call `list_dir`\npath=%s\nresult=%s", resolved, _truncate_block(payload))
+        payload = json.dumps(
+            {"path": str(resolved), "exists": True, "entries": entries},
+            ensure_ascii=False,
+        )
+        logger.info(
+            "Tool Call `list_dir`\npath=%s\nresult=%s",
+            resolved,
+            _truncate_block(payload),
+        )
         get_reporter().tool("list_dir", str(resolved), "ok")
         return payload
 
@@ -261,8 +309,19 @@ def _build_agent_tools() -> list[Any]:
     def read_file(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Read a UTF-8 text file."""
         resolved = _resolve_path(path, runtime.context)
-        content = resolved.read_text(encoding="utf-8")
-        logger.info("Tool Call `read_file`\npath=%s\ncontent=%s", resolved, _truncate_block(content))
+        if not resolved.exists():
+            raise FileNotFoundError(f"file does not exist: {resolved}")
+        if not resolved.is_file():
+            raise ValueError(f"path is not a file: {resolved}")
+        try:
+            content = resolved.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+        logger.info(
+            "Tool Call `read_file`\npath=%s\ncontent=%s",
+            resolved,
+            _truncate_block(content),
+        )
         get_reporter().tool("read_file", str(resolved), "ok")
         return content
 
@@ -270,9 +329,14 @@ def _build_agent_tools() -> list[Any]:
     def exists(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Check whether a path exists."""
         resolved = _resolve_path(path, runtime.context)
-        payload = json.dumps({"path": str(resolved), "exists": resolved.exists()}, ensure_ascii=False)
+        exists_flag = resolved.exists()
+        payload = json.dumps(
+            {"path": str(resolved), "exists": exists_flag}, ensure_ascii=False
+        )
         logger.info("Tool Call `exists`\npath=%s\nresult=%s", resolved, payload)
-        get_reporter().tool("exists", str(resolved), "ok")
+        get_reporter().tool(
+            "exists", str(resolved), f"exists={str(exists_flag).lower()}"
+        )
         return payload
 
     @tool
@@ -312,11 +376,23 @@ def _build_agent_tools() -> list[Any]:
         """Run a generated test file based on its extension and return stdout/stderr."""
         resolved = _resolve_path(path, runtime.context)
         payload = json.dumps(_run_test_path(resolved), ensure_ascii=False)
-        logger.info("Tool Call `run_test_file`\npath=%s\nresult=%s", resolved, _truncate_block(payload))
+        logger.info(
+            "Tool Call `run_test_file`\npath=%s\nresult=%s",
+            resolved,
+            _truncate_block(payload),
+        )
         get_reporter().tool("run_test_file", str(resolved), "ok")
         return payload
 
-    return [list_dir, read_file, exists, mkdir, write_file, validate_file, run_test_file]
+    return [
+        list_dir,
+        read_file,
+        exists,
+        mkdir,
+        write_file,
+        validate_file,
+        run_test_file,
+    ]
 
 
 def _resolve_path(raw_path: str, agent_context: AgentContext) -> Path:

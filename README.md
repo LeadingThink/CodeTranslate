@@ -34,17 +34,26 @@ CODETRANSLATE_MODEL=gpt-4o
 ## 快速使用
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m codetranslate.cli \
-  --project-root examples/sample_source \
-  --workspace-root .demo-workspace \
-  --target-root .demo-target \
-  --source-language python \
-  --target-language python \
-  analyze
+uv run codetranslate start
 ```
 
+启动后按提示输入：
+
+- `Project path`
+- `Output path`
+- `Source language`
+- `Target language`
+- `Action [analyze|plan|run]`
+
+默认输出目录：
+
+- target: `<project-parent>/<project-name>_translated`
+- workspace: `<target-parent>/.codetranslate-workspace`
+
+如果你仍然想走非交互命令，也可以：
+
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src uv run python -m codetranslate.cli \
+uv run codetranslate \
   --project-root examples/sample_source \
   --workspace-root .demo-workspace \
   --target-root .demo-target \

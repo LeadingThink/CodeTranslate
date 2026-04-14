@@ -23,7 +23,9 @@ class ConsoleReporter:
         summary = detail.strip().splitlines()[0] if detail.strip() else ""
         print(f"[model] {label}" + (f" | {summary[:160]}" if summary else ""))
 
-    def progress(self, completed: int, total: int, current: str = "", remaining_chain: str = "") -> None:
+    def progress(
+        self, completed: int, total: int, current: str = "", remaining_chain: str = ""
+    ) -> None:
         total = max(total, 1)
         filled = int(self.width * completed / total)
         bar = "#" * filled + "-" * (self.width - filled)
@@ -41,25 +43,25 @@ class ConsoleReporter:
 def start_interactive_session() -> None:
     print("CodeTranslate interactive session")
     project_root = _prompt("Project path", str(Path.cwd()))
+    resolved_project_root = Path(project_root).resolve()
+    default_target_root = (
+        resolved_project_root.parent / f"{resolved_project_root.name}_translated"
+    )
+    target_root = _prompt("Output path", str(default_target_root))
     source_language = _prompt("Source language")
     target_language = _prompt("Target language")
-    workspace_root = _prompt("Workspace path", str(Path(project_root).resolve() / ".codetranslate-workspace"))
-    target_root = _prompt("Target output path", str(Path(project_root).resolve() / "generated_target"))
-    entry_hints = _split_csv(_prompt("Entry hints (comma separated, optional)", ""))
-    include_paths = _split_csv(_prompt("Include paths (comma separated, optional)", ""))
-    exclude_paths = _split_csv(_prompt("Exclude paths (comma separated, optional)", ""))
     action = _prompt("Action [analyze|plan|run]", "run").strip().lower()
+    workspace_root = str(
+        Path(target_root).resolve().parent / ".codetranslate-workspace"
+    )
 
     request = MigrationRequest(
         source_language=source_language,
         target_language=target_language,
-        entry_hints=entry_hints,
-        include_paths=include_paths,
-        exclude_paths=exclude_paths,
     )
     paths = ProjectPaths(
-        source_root=str(Path(project_root).resolve()),
-        workspace_root=str(Path(workspace_root).resolve()),
+        source_root=str(resolved_project_root),
+        workspace_root=workspace_root,
         target_root=str(Path(target_root).resolve()),
         request=request,
     )
@@ -72,10 +74,17 @@ def start_interactive_session() -> None:
     try:
         if action == "analyze":
             result = orchestrator.analyze()
-            payload = {"symbols": len(result.symbols), "models": len(result.models), "risks": len(result.risk_nodes)}
+            payload = {
+                "symbols": len(result.symbols),
+                "models": len(result.models),
+                "risks": len(result.risk_nodes),
+            }
         elif action == "plan":
             units = orchestrator.plan()
-            payload = {"units": len(units), "ready": sum(unit.status.value == "ready" for unit in units)}
+            payload = {
+                "units": len(units),
+                "ready": sum(unit.status.value == "ready" for unit in units),
+            }
         else:
             payload = orchestrator.run()
     finally:
@@ -88,9 +97,3 @@ def _prompt(label: str, default: str | None = None) -> str:
     suffix = f" [{default}]" if default else ""
     value = input(f"{label}{suffix}: ").strip()
     return value or (default or "")
-
-
-def _split_csv(raw_value: str) -> list[str]:
-    if not raw_value.strip():
-        return []
-    return [item.strip() for item in raw_value.split(",") if item.strip()]

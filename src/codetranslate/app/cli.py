@@ -16,8 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--workspace-root", default=".codetranslate-workspace")
     parser.add_argument("--target-root", default="generated_target")
-    parser.add_argument("--source-language", required=True)
-    parser.add_argument("--target-language", required=True)
+    parser.add_argument("--source-language")
+    parser.add_argument("--target-language")
     parser.add_argument("--entry-hint", action="append", default=[])
     parser.add_argument("--include-path", action="append", default=[])
     parser.add_argument("--exclude-path", action="append", default=[])
@@ -43,8 +43,15 @@ def main() -> None:
     configure_logging(args.verbose)
     if args.command == "start":
         logging.getLogger().setLevel(logging.WARNING)
-        start_interactive_session()
+        try:
+            start_interactive_session()
+        except (KeyboardInterrupt, EOFError):
+            print("\n已退出 CodeTranslate。")
         return
+    if not args.source_language or not args.target_language:
+        parser.error(
+            "the following arguments are required for this command: --source-language, --target-language"
+        )
     request = MigrationRequest(
         source_language=args.source_language,
         target_language=args.target_language,
@@ -63,10 +70,17 @@ def main() -> None:
     match args.command:
         case "analyze":
             result = orchestrator.analyze()
-            payload = {"symbols": len(result.symbols), "models": len(result.models), "risks": len(result.risk_nodes)}
+            payload = {
+                "symbols": len(result.symbols),
+                "models": len(result.models),
+                "risks": len(result.risk_nodes),
+            }
         case "plan":
             units = orchestrator.plan()
-            payload = {"units": len(units), "ready": sum(unit.status.value == "ready" for unit in units)}
+            payload = {
+                "units": len(units),
+                "ready": sum(unit.status.value == "ready" for unit in units),
+            }
         case "run":
             payload = orchestrator.run()
         case "run-unit":

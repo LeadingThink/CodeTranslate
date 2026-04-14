@@ -163,6 +163,12 @@ class WorkspaceManager:
                 unit.unit_id: {
                     "dependencies": unit.dependencies,
                     "dependents": unit.dependents,
+                    "cycle_group": unit.cycle_group,
+                    "cycle_peers": unit.cycle_peers,
+                    "kind": unit.kind,
+                    "batch_members": unit.batch_members,
+                    "batch_file_paths": unit.batch_file_paths,
+                    "batch_target_file_paths": unit.batch_target_file_paths,
                 }
                 for unit in units
             },
@@ -171,6 +177,11 @@ class WorkspaceManager:
         for unit in units:
             module_graph.setdefault(unit.module, []).append(unit.unit_id)
         self.write_json("plan/module_graph.json", module_graph)
+        cycle_groups: dict[str, list[str]] = {}
+        for unit in units:
+            if unit.cycle_group:
+                cycle_groups.setdefault(unit.cycle_group, []).append(unit.unit_id)
+        self.write_json("plan/cycle_groups.json", cycle_groups)
 
     def save_context(self, context: UnitContext) -> None:
         self.write_json(f"contexts/{context.unit_id}.json", context)
@@ -230,6 +241,11 @@ class WorkspaceManager:
                     "target_language", item.get("language", "python")
                 ),
                 "project_module": item.get("project_module"),
+                "cycle_group": item.get("cycle_group"),
+                "cycle_peers": item.get("cycle_peers", []),
+                "batch_members": item.get("batch_members", []),
+                "batch_file_paths": item.get("batch_file_paths", []),
+                "batch_target_file_paths": item.get("batch_target_file_paths", []),
                 "status": UnitStatus(
                     status_row.get(
                         "status", item.get("status", UnitStatus.DISCOVERED.value)

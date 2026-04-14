@@ -16,16 +16,28 @@ class UnitMigrator:
     def migrate(self, unit: MigrationUnit, context: UnitContext) -> UnitExecutionResult:
         unit.status = UnitStatus.GENERATING
         generation = self.llm.generate_code(context)
-        target_path = Path(context.target_file_path)
-        if not target_path.exists():
-            raise RuntimeError(f"Agent did not write target file: {target_path}")
-        validate_source_file(target_path, unit.target_language)
-        log_path = self.workspace.log_unit(unit.unit_id, "generate", generation.rationale)
+        target_paths = [
+            Path(path)
+            for path in context.target_file_paths or [context.target_file_path]
+        ]
+        missing_paths = [path for path in target_paths if not path.exists()]
+        if missing_paths:
+            raise RuntimeError(
+                f"Agent did not write target file(s): {[str(path) for path in missing_paths]}"
+            )
+        for target_path in target_paths:
+            validate_source_file(target_path, unit.target_language)
+        log_path = self.workspace.log_unit(
+            unit.unit_id, "generate", generation.rationale
+        )
         unit.status = UnitStatus.GENERATED
         return UnitExecutionResult(
             unit_id=unit.unit_id,
             status=UnitStatus.GENERATED,
-            output_path=str(target_path),
+            output_path=str(target_paths[0]),
             log_path=str(log_path),
-            details={"rationale": generation.rationale},
+            details={
+                "rationale": generation.rationale,
+                "target_paths": [str(path) for path in target_paths],
+            },
         )

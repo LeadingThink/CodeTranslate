@@ -37,7 +37,10 @@ class UnitTester:
             unit_id=unit.unit_id,
             status=unit.status,
             log_path=str(log_path),
-            details={"returncode": process.returncode},
+            details={
+                "returncode": process.returncode,
+                "test_path": str(test_path),
+            },
         )
 
     def _test_suffix_for_language(self, language: str) -> str:

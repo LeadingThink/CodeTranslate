@@ -85,11 +85,13 @@ class MigrationOrchestrator:
         self.workspace.save_units(units)
         self.workspace.save_unit_statuses(units)
         self.workspace.save_plan_state(units)
+        self._report_cycle_batches(units)
         return units
 
     def run(self) -> dict[str, object]:
         analysis = self.analyze()
         units = self._load_or_create_plan(analysis)
+        self._report_cycle_batches(units)
         get_reporter().stage("Run Migration", f"files={len(units)}")
         return self._run_with_analysis(analysis, units)
 
@@ -133,6 +135,7 @@ class MigrationOrchestrator:
     def resume(self) -> dict[str, object]:
         analysis = self.analyze()
         units = self._load_or_create_plan(analysis)
+        self._report_cycle_batches(units)
         self.workspace.save_unit_statuses(units)
         return self._run_with_analysis(analysis, units)
 
@@ -154,7 +157,11 @@ class MigrationOrchestrator:
                 get_reporter().progress(
                     completed=sum(item.status == UnitStatus.VERIFIED for item in units),
                     total=len(units),
-                    current=unit.file_path,
+                    current=(
+                        f"{unit.file_path} [{unit.kind}]"
+                        if unit.kind == "cycle_batch"
+                        else unit.file_path
+                    ),
                     remaining_chain=self._critical_chain(units, units_by_id),
                 )
                 if not self.unit_executor.execute(unit, analysis, units_by_id):
@@ -199,6 +206,39 @@ class MigrationOrchestrator:
             return units
         return self.plan(analysis)
 
+    def _report_cycle_batches(self, units: list[MigrationUnit]) -> None:
+        cycle_batches = [unit for unit in units if unit.kind == "cycle_batch"]
+        summary = {
+            "cycle_batch_count": len(cycle_batches),
+            "batched_files": sum(len(unit.batch_members) for unit in cycle_batches),
+            "batches": [
+                {
+                    "unit_id": unit.unit_id,
+                    "members": unit.batch_members,
+                    "files": unit.batch_file_paths,
+                    "target_files": unit.batch_target_file_paths,
+                    "dependencies": unit.dependencies,
+                }
+                for unit in cycle_batches
+            ],
+        }
+        self.workspace.write_report("cycle_batch_summary.json", summary)
+        if not cycle_batches:
+            get_reporter().stage("Cycle Batches", "none detected")
+            return
+
+        get_reporter().stage(
+            "Cycle Batches",
+            f"detected={len(cycle_batches)} batched_files={summary['batched_files']}",
+        )
+        for unit in cycle_batches:
+            members = ", ".join(Path(path).name for path in unit.batch_file_paths)
+            dependencies = ", ".join(unit.dependencies) if unit.dependencies else "none"
+            get_reporter().stage(
+                f"Batch {unit.unit_id}",
+                f"members=[{members}] deps=[{dependencies}]",
+            )
+
     def _write_blocked_report_if_needed(self, units: list[MigrationUnit]) -> None:
         unfinished = [
             unit
@@ -228,10 +268,14 @@ class MigrationOrchestrator:
             if unit.status not in {UnitStatus.VERIFIED, UnitStatus.FAILED}
         }
         cache: dict[str, list[str]] = {}
+        visiting: set[str] = set()
 
         def visit(unit_id: str) -> list[str]:
             if unit_id in cache:
                 return cache[unit_id]
+            if unit_id in visiting:
+                return [f"{Path(units_by_id[unit_id].file_path).name}(cycle)"]
+            visiting.add(unit_id)
             unit = units_by_id[unit_id]
             candidates = [
                 visit(dependent_id)
@@ -240,6 +284,7 @@ class MigrationOrchestrator:
             ]
             best_tail = max(candidates, key=len, default=[])
             cache[unit_id] = [Path(unit.file_path).name] + best_tail
+            visiting.remove(unit_id)
             return cache[unit_id]
 
         chains = [visit(unit_id) for unit_id in pending]

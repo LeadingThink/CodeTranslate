@@ -46,7 +46,8 @@ class UnitExecutor:
         units_by_id: dict[str, MigrationUnit],
     ) -> bool:
         logger.info("Processing unit %s", unit.unit_id)
-        get_reporter().stage("Execute File", unit.file_path)
+        label = "Execute Batch" if unit.kind == "cycle_batch" else "Execute File"
+        get_reporter().stage(label, unit.file_path)
         context = self.context_builder.build(unit, analysis, units_by_id)
         if context.related_resources:
             staged_resources = self.workspace.stage_related_resources(

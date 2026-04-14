@@ -133,9 +133,11 @@ class MigrationOrchestrator:
         }
 
     def resume(self) -> dict[str, object]:
-        analysis = self.analyze()
+        analysis = self._load_or_skip_analysis()
         units = self._load_or_create_plan(analysis)
+        self._reset_failed_units(units)
         self._report_cycle_batches(units)
+        self._report_resume_state(units)
         self.workspace.save_unit_statuses(units)
         return self._run_with_analysis(analysis, units)
 
@@ -205,6 +207,69 @@ class MigrationOrchestrator:
         if units:
             return units
         return self.plan(analysis)
+
+    def _load_or_skip_analysis(self) -> AnalysisResult:
+        pipeline_state = self.workspace.load_pipeline_state()
+        if pipeline_state and pipeline_state.analyzed and pipeline_state.initialized:
+            get_reporter().stage("Resume", "reusing cached analysis")
+            scan = self.workspace.load_scan()
+            source_files = self.workspace.read_json("analysis/source_files.json")
+            module_dependencies = self.workspace.read_json(
+                "analysis/module_dependencies.json"
+            )
+            entrypoints = self.workspace.read_json(
+                "analysis/entrypoints_structured.json"
+            )
+            symbols = self.workspace.read_json("analysis/symbols.json")
+            models = self.workspace.read_json("analysis/models.json")
+            call_graph = self.workspace.read_json("analysis/callgraph.json")
+            ir_data = self.workspace.read_json("analysis/ir.json")
+            risk_nodes = self.workspace.read_json("reports/risk_summary.json").get(
+                "risk_nodes", []
+            )
+            project_insights = self.workspace.read_json(
+                "analysis/project_insights.json"
+            )
+            return AnalysisResult(
+                project_root=pipeline_state.project_root,
+                scan=scan,
+                source_files=source_files,
+                module_dependencies=module_dependencies,
+                entrypoints=entrypoints,
+                symbols=symbols,
+                models=models,
+                call_graph=call_graph,
+                ir=ir_data,
+                risk_nodes=risk_nodes,
+                project_insights=project_insights,
+            )
+        return self.analyze()
+
+    def _reset_failed_units(self, units: list[MigrationUnit]) -> int:
+        failed_units = [unit for unit in units if unit.status == UnitStatus.FAILED]
+        for unit in failed_units:
+            unit.status = UnitStatus.DISCOVERED
+            unit.retry_count = 0
+            unit.failure_reason = None
+        return len(failed_units)
+
+    def _report_resume_state(self, units: list[MigrationUnit]) -> None:
+        verified = sum(1 for unit in units if unit.status == UnitStatus.VERIFIED)
+        failed_reset = sum(
+            1
+            for unit in units
+            if unit.status == UnitStatus.DISCOVERED and unit.retry_count == 0
+        )
+        pending = sum(
+            1
+            for unit in units
+            if unit.status in {UnitStatus.ANALYZED, UnitStatus.DISCOVERED}
+            and unit.retry_count > 0
+        )
+        get_reporter().stage(
+            "Resume State",
+            f"verified={verified} pending={pending + failed_reset} total={len(units)}",
+        )
 
     def _report_cycle_batches(self, units: list[MigrationUnit]) -> None:
         cycle_batches = [unit for unit in units if unit.kind == "cycle_batch"]

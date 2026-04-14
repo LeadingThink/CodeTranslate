@@ -61,7 +61,7 @@ def start_interactive_session() -> None:
     target_root = _prompt("Output path", str(default_target_root))
     source_language = _prompt("Source language")
     target_language = _prompt("Target language")
-    action = _prompt("Action [analyze|plan|run]", "run").strip().lower()
+    action = _prompt("Action [analyze|plan|run|resume]", "run").strip().lower()
     workspace_root = str(
         normalize_user_path(target_root).resolve().parent / ".codetranslate-workspace"
     )
@@ -96,6 +96,8 @@ def start_interactive_session() -> None:
                 "units": len(units),
                 "ready": sum(unit.status.value == "ready" for unit in units),
             }
+        elif action == "resume":
+            payload = orchestrator.resume()
         else:
             payload = orchestrator.run()
     finally:

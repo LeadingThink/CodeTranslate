@@ -294,6 +294,58 @@ class WorkspaceManager:
         self.save_pipeline_state(state)
         return state
 
+    def load_pipeline_state(self) -> PipelineState | None:
+        try:
+            data = self.read_json("state/pipeline_state.json")
+            return PipelineState(
+                project_root=data.get("project_root", ""),
+                workspace_root=data.get("workspace_root", ""),
+                target_root=data.get("target_root", ""),
+                initialized=data.get("initialized", False),
+                analyzed=data.get("analyzed", False),
+                planned=data.get("planned", False),
+                completed_units=data.get("completed_units", 0),
+                failed_units=data.get("failed_units", []),
+                blocked_units=data.get("blocked_units", []),
+            )
+        except FileNotFoundError:
+            return None
+
+    def load_scan(self) -> ProjectScanSummary:
+        data = self.read_json("analysis/project_scan.json")
+        maven_modules_raw = data.get("maven_modules", [])
+        maven_modules = [
+            MavenModuleRecord(
+                name=m.get("name", ""),
+                relative_path=m.get("relative_path", ""),
+                pom_path=m.get("pom_path", ""),
+                packaging=m.get("packaging", "jar"),
+                parent=m.get("parent"),
+                dependencies=m.get("dependencies", []),
+                source_roots=m.get("source_roots", []),
+                test_roots=m.get("test_roots", []),
+                resource_roots=m.get("resource_roots", []),
+            )
+            for m in maven_modules_raw
+        ]
+        return ProjectScanSummary(
+            project_root=data.get("project_root", ""),
+            source_directories=data.get("source_directories", []),
+            test_directories=data.get("test_directories", []),
+            resource_directories=data.get("resource_directories", []),
+            config_files=data.get("config_files", []),
+            languages=data.get("languages", []),
+            frameworks=data.get("frameworks", []),
+            build_tools=data.get("build_tools", []),
+            dependency_managers=data.get("dependency_managers", []),
+            entrypoints=data.get("entrypoints", []),
+            candidate_entrypoints=data.get("candidate_entrypoints", []),
+            files_scanned=data.get("files_scanned", 0),
+            maven_modules=maven_modules,
+            test_files=data.get("test_files", []),
+            resource_files=data.get("resource_files", []),
+        )
+
     def _safe_read_json(self, relative_path: str, default: Any) -> Any:
         try:
             return self.read_json(relative_path)

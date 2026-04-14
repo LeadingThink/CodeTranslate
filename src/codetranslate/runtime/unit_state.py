@@ -7,15 +7,26 @@ from ..core.models import MigrationUnit, UnitStatus
 
 @dataclass(slots=True)
 class UnitStateMachine:
+    _TERMINAL_STATUSES = {
+        UnitStatus.VERIFIED,
+        UnitStatus.FAILED,
+        UnitStatus.BLOCKED,
+    }
+    _RESTARTABLE_STATUSES = {
+        UnitStatus.GENERATING,
+        UnitStatus.GENERATED,
+        UnitStatus.TESTING,
+        UnitStatus.TESTED,
+        UnitStatus.REPAIRING,
+    }
+
     def refresh_ready_units(self, units: list[MigrationUnit]) -> list[MigrationUnit]:
         units_by_id = {unit.unit_id: unit for unit in units}
         for unit in units:
-            if unit.status in {
-                UnitStatus.VERIFIED,
-                UnitStatus.FAILED,
-                UnitStatus.BLOCKED,
-            }:
+            if unit.status in self._TERMINAL_STATUSES:
                 continue
+            if unit.status in self._RESTARTABLE_STATUSES:
+                unit.status = UnitStatus.DISCOVERED
             if self._dependencies_verified(unit, units_by_id) and unit.status in {
                 UnitStatus.ANALYZED,
                 UnitStatus.DISCOVERED,

@@ -127,6 +127,53 @@ JAVA_KEYWORDS = {
     "try",
 }
 
+JAVA_BUILTIN_TYPES = {
+    "String",
+    "Object",
+    "Class",
+    "Exception",
+    "RuntimeException",
+    "Throwable",
+    "Boolean",
+    "Byte",
+    "Short",
+    "Integer",
+    "Long",
+    "Float",
+    "Double",
+    "Character",
+    "Void",
+}
+
+JAVA_COMMON_TYPE_TOKENS = {
+    "List",
+    "Set",
+    "Map",
+    "Collection",
+    "Iterable",
+    "Iterator",
+    "Optional",
+    "Stream",
+    "Comparator",
+    "Consumer",
+    "Supplier",
+    "Function",
+    "Predicate",
+    "Runnable",
+    "Callable",
+    "Future",
+    "CompletableFuture",
+    "Queue",
+    "Deque",
+    "HashMap",
+    "HashSet",
+    "ArrayList",
+    "LinkedHashSet",
+    "LinkedList",
+    "Arrays",
+    "Collections",
+}
+
 
 @dataclass(slots=True)
 class JavaMethodRecord:
@@ -258,7 +305,8 @@ class JavaAdapter:
     def _parse_modules(
         self, project_root: Path, scan: ProjectScanSummary
     ) -> list[JavaModuleParseResult]:
-        parsed_modules: list[JavaModuleParseResult] = []
+        package_type_index: dict[str, set[str]] = {}
+        java_files: list[tuple[Path, str]] = []
         for path in project_root.rglob("*.java"):
             if any(
                 part.startswith(".git") or part in {"target", "build", ".venv"}
@@ -266,7 +314,22 @@ class JavaAdapter:
             ):
                 continue
             source = path.read_text(encoding="utf-8", errors="ignore")
-            parsed_modules.append(self._analyze_file(project_root, path, source, scan))
+            java_files.append((path, source))
+            package_name = self._package_name(source)
+            if package_name:
+                package_type_index.setdefault(package_name, set()).add(path.stem)
+
+        parsed_modules: list[JavaModuleParseResult] = []
+        for path, source in java_files:
+            parsed_modules.append(
+                self._analyze_file(
+                    project_root,
+                    path,
+                    source,
+                    scan,
+                    package_type_index,
+                )
+            )
         return parsed_modules
 
     def _analyze_file(
@@ -275,6 +338,7 @@ class JavaAdapter:
         path: Path,
         source: str,
         scan: ProjectScanSummary,
+        package_type_index: dict[str, set[str]],
     ) -> JavaModuleParseResult:
         package_name = self._package_name(source)
         module = f"{package_name}.{path.stem}" if package_name else path.stem
@@ -294,6 +358,17 @@ class JavaAdapter:
 
         imports = self._extract_imports(module, source)
         result.module_dependencies.extend(imports)
+        result.module_dependencies.extend(
+            self._extract_same_package_type_dependencies(
+                module=module,
+                source=source,
+                package_name=package_name,
+                package_type_index=package_type_index,
+            )
+        )
+        result.module_dependencies = self._dedupe_dependencies(
+            result.module_dependencies
+        )
 
         class_symbol, class_annotations, class_kind = self._extract_class_symbol(
             module, str(path), source
@@ -386,6 +461,97 @@ class JavaAdapter:
                 )
             )
         return dependencies
+
+    def _extract_same_package_type_dependencies(
+        self,
+        module: str,
+        source: str,
+        package_name: str,
+        package_type_index: dict[str, set[str]],
+    ) -> list[ModuleDependency]:
+        if not package_name:
+            return []
+
+        same_package_types = package_type_index.get(package_name, set())
+        if not same_package_types:
+            return []
+
+        referenced_types: set[str] = set()
+        referenced_types.update(
+            self._extract_type_names(self._strip_java_comments(source))
+        )
+
+        class_match = CLASS_RE.search(source)
+        if class_match is not None:
+            referenced_types.update(
+                self._extract_type_names(class_match.group("extends") or "")
+            )
+            referenced_types.update(
+                self._extract_type_names(class_match.group("implements") or "")
+            )
+
+        for field_match in FIELD_RE.finditer(source):
+            referenced_types.update(
+                self._extract_type_names(field_match.group("type") or "")
+            )
+
+        for method_match in METHOD_RE.finditer(source):
+            signature = method_match.group("signature") or ""
+            params = method_match.group("params") or ""
+            referenced_types.update(self._extract_type_names(signature))
+            referenced_types.update(self._extract_type_names(params))
+
+        current_type_name = module.rsplit(".", 1)[-1]
+        dependencies: list[ModuleDependency] = []
+        for type_name in sorted(referenced_types):
+            if type_name == current_type_name or type_name not in same_package_types:
+                continue
+            dependencies.append(
+                ModuleDependency(
+                    source_module=module,
+                    target_module=f"{package_name}.{type_name}",
+                    language="java",
+                    import_kind="same_package_type",
+                    symbols=[type_name],
+                )
+            )
+        return dependencies
+
+    def _strip_java_comments(self, text: str) -> str:
+        without_block_comments = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+        return re.sub(r"//.*", " ", without_block_comments)
+
+    def _extract_type_names(self, text: str) -> set[str]:
+        if not text.strip():
+            return set()
+
+        scrubbed = re.sub(r'"(?:\\.|[^"\\])*"', " ", text)
+        scrubbed = re.sub(r"'(?:\\.|[^'\\])*'", " ", scrubbed)
+
+        candidates = set(re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", scrubbed))
+        return {
+            candidate
+            for candidate in candidates
+            if candidate not in JAVA_BUILTIN_TYPES
+            and candidate not in JAVA_COMMON_TYPE_TOKENS
+        }
+
+    def _dedupe_dependencies(
+        self, dependencies: list[ModuleDependency]
+    ) -> list[ModuleDependency]:
+        deduped: list[ModuleDependency] = []
+        seen: set[tuple[str, str, str]] = set()
+        for dependency in dependencies:
+            key = (
+                dependency.source_module,
+                dependency.target_module,
+                dependency.import_kind,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(dependency)
+        return deduped
 
     def _extract_class_symbol(
         self, module: str, file_path: str, source: str

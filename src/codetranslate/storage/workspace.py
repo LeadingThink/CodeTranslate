@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,60 @@ class WorkspaceManager:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
+
+    def copy_file_to_target(
+        self, source_path: str | Path, target_relative_path: str | None = None
+    ) -> Path:
+        source = Path(source_path).resolve()
+        if not source.exists() or not source.is_file():
+            raise FileNotFoundError(f"source file does not exist: {source}")
+        destination = self._resolve_target_destination(source, target_relative_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        return destination
+
+    def copy_directory_to_target(
+        self, source_path: str | Path, target_relative_path: str | None = None
+    ) -> Path:
+        source = Path(source_path).resolve()
+        if not source.exists() or not source.is_dir():
+            raise FileNotFoundError(f"source directory does not exist: {source}")
+        destination = self._resolve_target_destination(source, target_relative_path)
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+        return destination
+
+    def stage_related_resources(
+        self, related_resources: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        staged: list[dict[str, str]] = []
+        source_root = Path(self.paths.source_root).resolve()
+        for item in related_resources:
+            raw_path = str(item.get("path", "")).strip()
+            if not raw_path:
+                continue
+            source = Path(raw_path)
+            if not source.is_absolute():
+                source = source_root / source
+            source = source.resolve()
+            if not source.exists():
+                continue
+            relative_target = self._best_effort_relative_target(source)
+            if source.is_dir():
+                destination = self.copy_directory_to_target(source, relative_target)
+                staged_kind = "resource_dir"
+            else:
+                destination = self.copy_file_to_target(source, relative_target)
+                staged_kind = item.get("kind", "resource_file")
+            staged.append(
+                {
+                    **item,
+                    "path": str(destination),
+                    "source_path": str(source),
+                    "kind": staged_kind,
+                    "staged": "true",
+                }
+            )
+        return staged
 
     def save_scan(self, scan: ProjectScanSummary) -> None:
         self.write_json("analysis/project_scan.json", scan)
@@ -228,3 +283,29 @@ class WorkspaceManager:
             return self.read_json(relative_path)
         except FileNotFoundError:
             return default
+
+    def _resolve_target_destination(
+        self, source: Path, target_relative_path: str | None
+    ) -> Path:
+        if target_relative_path:
+            destination = (self.target_root / target_relative_path).resolve()
+        else:
+            destination = (self.target_root / source.name).resolve()
+        target_root_resolved = self.target_root.resolve()
+        if not (
+            destination == target_root_resolved
+            or target_root_resolved in destination.parents
+        ):
+            raise ValueError(f"target path outside target root: {destination}")
+        return destination
+
+    def _best_effort_relative_target(self, source: Path) -> str:
+        source_root = Path(self.paths.source_root).resolve()
+        try:
+            return source.relative_to(source_root).as_posix()
+        except ValueError:
+            anchor = source.anchor.rstrip("\\/")
+            parts = [part for part in source.parts if part and part != anchor]
+            if not parts:
+                return source.name
+            return "/".join(["external_sources", *parts])

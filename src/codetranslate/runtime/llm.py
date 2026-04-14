@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +37,7 @@ class LLMClient:
         "You are a code migration agent.\n"
         "You must complete work by calling tools.\n"
         "Do not return code in the final assistant message.\n"
-        "Use tools to inspect files, write files, validate source files, and run test files.\n"
+        "Use tools to inspect files, copy resource files when needed, write files, validate source files, and run test files.\n"
         "Default execution granularity is file-level migration focused on preserving project completion.\n"
         "Preserve the target language of each file and keep generated code runnable in that language.\n"
         "Before finishing, ensure the required file has been written to the exact requested path.\n"
@@ -185,12 +186,15 @@ class LLMClient:
             "Requirements:\n"
             f"- You must write the final migrated file to {context.target_file_path} using write_file.\n"
             "- Preserve complete file-level behavior and cross-symbol consistency.\n"
+            f"- Default project paths are: source_root={self.paths.source_root}, workspace_root={self.paths.workspace_root}, target_root={self.paths.target_root}.\n"
             "- First call exists on the target path before attempting to read it.\n"
             "- Only call read_file on the target path if exists reports exists=true.\n"
             "- If the target file does not exist yet, do not call read_file on it; write the full migrated file directly.\n"
             "- If the target file exists, read it first and merge carefully at file scope.\n"
             "- Do not put tests or markdown into the target source file.\n"
             "- Preserve semantics covered by related tests and resource fixtures when they exist.\n"
+            "- Absolute source paths from other mounted projects may be read when needed.\n"
+            "- If you need a related resource fixture in the translated project, first copy it into workspace_root or target_root with copy_path, then prefer the copied path.\n"
             f"- Before finishing, call validate_file on {context.target_file_path}.\n\n"
             f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
             f"Source code:\n```{source_fence}\n{context.source_code}\n```"
@@ -220,6 +224,9 @@ class LLMClient:
             f"- The test file must match the source language `{context.target_constraints.get('language')}`.\n"
             f"- Use this test style guidance: {self._test_style_for_language(context.target_constraints.get('language', 'python'))}.\n"
             "- Prefer validating exported file behavior and cross-symbol contracts over isolated fragment behavior.\n"
+            f"- Default project paths are: source_root={self.paths.source_root}, workspace_root={self.paths.workspace_root}, target_root={self.paths.target_root}.\n"
+            "- Absolute source paths from other mounted projects may be read when needed.\n"
+            "- If a related resource is needed for the test, use an already staged path when available; otherwise use copy_path to mirror it into target_root or workspace_root before reading it.\n"
             f"- Before finishing, call validate_file on {test_path}.\n\n"
             f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
             f"Source code:\n```{source_fence}\n{context.source_code}\n```"
@@ -248,6 +255,9 @@ class LLMClient:
             "- Read the relevant existing file before editing.\n"
             "- Fix either the target file or the test file.\n"
             "- Write the corrected file with write_file.\n"
+            f"- Default project paths are: source_root={self.paths.source_root}, workspace_root={self.paths.workspace_root}, target_root={self.paths.target_root}.\n"
+            "- Absolute source paths from other mounted projects may be read when needed.\n"
+            "- If a resource fixture is needed, use an already staged path when available; otherwise use copy_path to place it in workspace_root or target_root before reading it.\n"
             f"- Keep tests aligned with this guidance: {self._test_style_for_language(context.target_constraints.get('language', 'python'))}.\n"
             "- Validate any source or test file you changed before finishing using validate_file.\n\n"
             f"Failure log:\n```text\n{failure_log[:3000]}\n```\n\n"
@@ -274,7 +284,7 @@ def _build_agent_tools() -> list[Any]:
     @tool
     def list_dir(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """List entries under a directory path."""
-        resolved = _resolve_path(path, runtime.context)
+        resolved = _resolve_access_path(path, runtime.context)
         if not resolved.exists():
             payload = json.dumps(
                 {"path": str(resolved), "exists": False, "entries": []},
@@ -308,7 +318,7 @@ def _build_agent_tools() -> list[Any]:
     @tool
     def read_file(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Read a UTF-8 text file."""
-        resolved = _resolve_path(path, runtime.context)
+        resolved = _resolve_access_path(path, runtime.context)
         if not resolved.exists():
             raise FileNotFoundError(f"file does not exist: {resolved}")
         if not resolved.is_file():
@@ -328,7 +338,7 @@ def _build_agent_tools() -> list[Any]:
     @tool
     def exists(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Check whether a path exists."""
-        resolved = _resolve_path(path, runtime.context)
+        resolved = _resolve_access_path(path, runtime.context)
         exists_flag = resolved.exists()
         payload = json.dumps(
             {"path": str(resolved), "exists": exists_flag}, ensure_ascii=False
@@ -342,7 +352,7 @@ def _build_agent_tools() -> list[Any]:
     @tool
     def mkdir(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Create a directory path inside the project, workspace, or target roots."""
-        resolved = _resolve_path(path, runtime.context)
+        resolved = _resolve_output_path(path, runtime.context)
         resolved.mkdir(parents=True, exist_ok=True)
         logger.info("Tool Call `mkdir`\npath=%s", resolved)
         get_reporter().tool("mkdir", str(resolved), "ok")
@@ -351,7 +361,7 @@ def _build_agent_tools() -> list[Any]:
     @tool
     def write_file(path: str, content: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Write a UTF-8 text file."""
-        resolved = _resolve_path(path, runtime.context)
+        resolved = _resolve_output_path(path, runtime.context)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content, encoding="utf-8")
         logger.info(
@@ -363,9 +373,37 @@ def _build_agent_tools() -> list[Any]:
         return str(resolved)
 
     @tool
+    def copy_path(
+        source_path: str,
+        destination_path: str,
+        runtime: ToolRuntime[AgentContext],
+    ) -> str:
+        """Copy a file or directory from an allowed source root into workspace or target roots."""
+        source = _resolve_access_path(source_path, runtime.context)
+        destination = _resolve_output_path(destination_path, runtime.context)
+        if not source.exists():
+            raise FileNotFoundError(f"source path does not exist: {source}")
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        payload = json.dumps(
+            {
+                "source": str(source),
+                "destination": str(destination),
+                "type": "dir" if source.is_dir() else "file",
+            },
+            ensure_ascii=False,
+        )
+        logger.info("Tool Call `copy_path`\nresult=%s", payload)
+        get_reporter().tool("copy_path", f"{source} -> {destination}", "ok")
+        return payload
+
+    @tool
     def validate_file(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Validate a source or test file based on its extension."""
-        resolved = _resolve_path(path, runtime.context)
+        resolved = _resolve_access_path(path, runtime.context)
         payload = _validate_file_path(resolved)
         logger.info("Tool Call `validate_file`\npath=%s\nresult=%s", resolved, payload)
         get_reporter().tool("validate_file", str(resolved), "ok")
@@ -374,7 +412,7 @@ def _build_agent_tools() -> list[Any]:
     @tool
     def run_test_file(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Run a generated test file based on its extension and return stdout/stderr."""
-        resolved = _resolve_path(path, runtime.context)
+        resolved = _resolve_access_path(path, runtime.context)
         payload = json.dumps(_run_test_path(resolved), ensure_ascii=False)
         logger.info(
             "Tool Call `run_test_file`\npath=%s\nresult=%s",
@@ -390,23 +428,30 @@ def _build_agent_tools() -> list[Any]:
         exists,
         mkdir,
         write_file,
+        copy_path,
         validate_file,
         run_test_file,
     ]
 
 
-def _resolve_path(raw_path: str, agent_context: AgentContext) -> Path:
+def _resolve_access_path(raw_path: str, agent_context: AgentContext) -> Path:
     path = Path(raw_path)
     if not path.is_absolute():
         path = Path(agent_context.paths.source_root) / path
+    return path.resolve()
+
+
+def _resolve_output_path(raw_path: str, agent_context: AgentContext) -> Path:
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = Path(agent_context.paths.target_root) / path
     resolved = path.resolve()
     allowed_roots = (
-        Path(agent_context.paths.source_root).resolve(),
         Path(agent_context.paths.workspace_root).resolve(),
         Path(agent_context.paths.target_root).resolve(),
     )
     if not any(resolved == root or root in resolved.parents for root in allowed_roots):
-        raise ValueError(f"path outside allowed roots: {resolved}")
+        raise ValueError(f"destination path outside writable roots: {resolved}")
     return resolved
 
 

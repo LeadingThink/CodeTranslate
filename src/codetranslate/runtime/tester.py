@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 from .llm import LLMClient
 from .language_runtime import run_test_file
@@ -15,8 +16,11 @@ class UnitTester:
 
     def generate_test(self, unit: MigrationUnit, context: UnitContext) -> Path:
         test_suffix = self._test_suffix_for_language(unit.target_language)
-        test_path = self.workspace.generated_tests_dir / f"test_{unit.unit_id}{test_suffix}"
-        self.llm.generate_tests(context, str(test_path))
+        test_path = (
+            self.workspace.generated_tests_dir / f"test_{unit.unit_id}{test_suffix}"
+        )
+        staged_context = self._with_staged_resources(context)
+        self.llm.generate_tests(staged_context, str(test_path))
         if not test_path.exists():
             raise RuntimeError(f"Agent did not write test file: {test_path}")
         return test_path
@@ -26,7 +30,9 @@ class UnitTester:
         process = run_test_file(test_path, unit.target_language)
         combined = (process.stdout or "") + "\n" + (process.stderr or "")
         log_path = self.workspace.log_unit(unit.unit_id, "test", combined.strip())
-        unit.status = UnitStatus.TESTED if process.returncode == 0 else UnitStatus.REPAIRING
+        unit.status = (
+            UnitStatus.TESTED if process.returncode == 0 else UnitStatus.REPAIRING
+        )
         return UnitExecutionResult(
             unit_id=unit.unit_id,
             status=unit.status,
@@ -38,3 +44,13 @@ class UnitTester:
         if language == "nodejs":
             return ".js"
         return ".py"
+
+    def _with_staged_resources(self, context: UnitContext) -> UnitContext:
+        if not context.related_resources:
+            return context
+        staged_resources = self.workspace.stage_related_resources(
+            context.related_resources
+        )
+        if not staged_resources:
+            return context
+        return replace(context, related_resources=staged_resources)

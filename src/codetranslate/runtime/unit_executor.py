@@ -4,7 +4,13 @@ import logging
 from pathlib import Path
 
 from ..analysis.context_builder import UnitContextBuilder
-from ..core.models import AnalysisResult, MigrationUnit, UnitContext, UnitExecutionResult, UnitStatus
+from ..core.models import (
+    AnalysisResult,
+    MigrationUnit,
+    UnitContext,
+    UnitExecutionResult,
+    UnitStatus,
+)
 from ..storage.workspace import WorkspaceManager
 from .reporter import get_reporter
 from .migrator import UnitMigrator
@@ -42,6 +48,12 @@ class UnitExecutor:
         logger.info("Processing unit %s", unit.unit_id)
         get_reporter().stage("Execute File", unit.file_path)
         context = self.context_builder.build(unit, analysis, units_by_id)
+        if context.related_resources:
+            staged_resources = self.workspace.stage_related_resources(
+                context.related_resources
+            )
+            if staged_resources:
+                context.related_resources = staged_resources
         self.workspace.save_context(context)
         self.migrator.migrate(unit, context)
 
@@ -59,13 +71,19 @@ class UnitExecutor:
         test_path: Path,
     ) -> bool:
         failure_log = self._read_failure_log(log_path)
-        while unit.retry_count <= unit.max_retries and unit.status != UnitStatus.VERIFIED:
+        while (
+            unit.retry_count <= unit.max_retries and unit.status != UnitStatus.VERIFIED
+        ):
             if not self.repairer.repair(unit, context, failure_log, test_path):
                 return False
             result = self._run_checks(unit, test_path)
             if result.status == UnitStatus.VERIFIED:
                 return True
-            failure_log = self._read_failure_log(result.log_path) or unit.failure_reason or failure_log
+            failure_log = (
+                self._read_failure_log(result.log_path)
+                or unit.failure_reason
+                or failure_log
+            )
         unit.status = UnitStatus.FAILED
         return False
 

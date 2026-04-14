@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from ...core.models import (
     CallEdge,
@@ -36,6 +36,7 @@ class LanguageAnalysis:
     call_graph: list[CallEdge] = field(default_factory=list)
     ir_nodes: list[IRNode] = field(default_factory=list)
     risk_nodes: list[str] = field(default_factory=list)
+    project_insights: dict[str, Any] = field(default_factory=dict)
 
 
 class LanguageAdapter(Protocol):
@@ -45,4 +46,6 @@ class LanguageAdapter(Protocol):
 
     def scan_file(self, path: Path, project_root: Path) -> ScanObservation: ...
 
-    def analyze_project(self, project_root: Path, scan: ProjectScanSummary) -> LanguageAnalysis: ...
+    def analyze_project(
+        self, project_root: Path, scan: ProjectScanSummary
+    ) -> LanguageAnalysis: ...

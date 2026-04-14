@@ -9,7 +9,13 @@ from ..analysis.context_builder import UnitContextBuilder
 from ..analysis.planner import MigrationPlanner
 from ..analysis.project_intelligence import ProjectIntelligenceAnalyzer
 from ..analysis.scanner import ProjectScanner
-from ..core.models import AnalysisResult, MigrationUnit, PipelineState, ProjectPaths, UnitStatus
+from ..core.models import (
+    AnalysisResult,
+    MigrationUnit,
+    PipelineState,
+    ProjectPaths,
+    UnitStatus,
+)
 from ..core.settings import AppSettings
 from ..runtime.llm import LLMClient
 from ..runtime.migrator import UnitMigrator
@@ -52,8 +58,13 @@ class MigrationOrchestrator:
         get_reporter().stage("Scan Project", self.paths.source_root)
         scan = self.scanner.scan(self.paths.source_root, self.paths.request)
         self.workspace.save_scan(scan)
-        get_reporter().stage("Build Analysis", f"source={self.paths.request.source_language} target={self.paths.request.target_language}")
-        analysis = self.analyzer.analyze(self.paths.source_root, scan, self.paths.request)
+        get_reporter().stage(
+            "Build Analysis",
+            f"source={self.paths.request.source_language} target={self.paths.request.target_language}",
+        )
+        analysis = self.analyzer.analyze(
+            self.paths.source_root, scan, self.paths.request
+        )
         self.workspace.save_analysis(analysis)
         state = PipelineState(
             project_root=self.paths.source_root,
@@ -68,7 +79,9 @@ class MigrationOrchestrator:
     def plan(self, analysis: AnalysisResult | None = None) -> list[MigrationUnit]:
         analysis = analysis or self.analyze()
         get_reporter().stage("Plan Migration", "Building file dependency graph")
-        units = self.planner.build_units(analysis, self.paths.target_root, self.paths.request.target_language)
+        units = self.planner.build_units(
+            analysis, self.paths.target_root, self.paths.request.target_language
+        )
         self.workspace.save_units(units)
         self.workspace.save_unit_statuses(units)
         self.workspace.save_plan_state(units)
@@ -90,7 +103,11 @@ class MigrationOrchestrator:
         units_by_id = {item.unit_id: item for item in units}
         if not self.state_machine.can_run_as_single_unit(unit, units_by_id):
             unit.status = UnitStatus.BLOCKED
-            return {"unit_id": unit_id, "status": "blocked", "reason": "dependencies not yet verified"}
+            return {
+                "unit_id": unit_id,
+                "status": "blocked",
+                "reason": "dependencies not yet verified",
+            }
 
         unit.status = UnitStatus.READY
         self.unit_executor.execute(unit, analysis, units_by_id)
@@ -107,7 +124,11 @@ class MigrationOrchestrator:
         unit = units_by_id[unit_id]
         repaired = self.unit_executor.execute(unit, analysis, units_by_id)
         self.workspace.save_unit_statuses(units)
-        return {"unit_id": unit_id, "repaired": str(repaired).lower(), "status": unit.status.value}
+        return {
+            "unit_id": unit_id,
+            "repaired": str(repaired).lower(),
+            "status": unit.status.value,
+        }
 
     def resume(self) -> dict[str, object]:
         analysis = self.analyze()
@@ -165,7 +186,11 @@ class MigrationOrchestrator:
             current="",
             remaining_chain=self._critical_chain(units, units_by_id),
         )
-        get_reporter().result("Migration", system_verify.get("system_status", "unknown"), json.dumps(summary, ensure_ascii=False))
+        get_reporter().result(
+            "Migration",
+            system_verify.get("system_status", "unknown"),
+            json.dumps(summary, ensure_ascii=False),
+        )
         return summary
 
     def _load_or_create_plan(self, analysis: AnalysisResult) -> list[MigrationUnit]:
@@ -178,7 +203,8 @@ class MigrationOrchestrator:
         unfinished = [
             unit
             for unit in units
-            if unit.status not in {UnitStatus.VERIFIED, UnitStatus.FAILED, UnitStatus.BLOCKED}
+            if unit.status
+            not in {UnitStatus.VERIFIED, UnitStatus.FAILED, UnitStatus.BLOCKED}
         ]
         if not unfinished:
             return
@@ -193,7 +219,9 @@ class MigrationOrchestrator:
             if all(unit.status == UnitStatus.VERIFIED for unit in module_units):
                 self.verifier.verify_module(module, module_units)
 
-    def _critical_chain(self, units: list[MigrationUnit], units_by_id: dict[str, MigrationUnit]) -> str:
+    def _critical_chain(
+        self, units: list[MigrationUnit], units_by_id: dict[str, MigrationUnit]
+    ) -> str:
         pending = {
             unit.unit_id
             for unit in units

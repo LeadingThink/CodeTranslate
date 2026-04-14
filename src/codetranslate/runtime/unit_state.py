@@ -10,7 +10,11 @@ class UnitStateMachine:
     def refresh_ready_units(self, units: list[MigrationUnit]) -> list[MigrationUnit]:
         units_by_id = {unit.unit_id: unit for unit in units}
         for unit in units:
-            if unit.status in {UnitStatus.VERIFIED, UnitStatus.FAILED, UnitStatus.BLOCKED}:
+            if unit.status in {
+                UnitStatus.VERIFIED,
+                UnitStatus.FAILED,
+                UnitStatus.BLOCKED,
+            }:
                 continue
             if self._dependencies_verified(unit, units_by_id) and unit.status in {
                 UnitStatus.ANALYZED,
@@ -19,10 +23,16 @@ class UnitStateMachine:
                 unit.status = UnitStatus.READY
         return [unit for unit in units if unit.status == UnitStatus.READY]
 
-    def unlock_dependents(self, unit: MigrationUnit, units_by_id: dict[str, MigrationUnit]) -> None:
+    def unlock_dependents(
+        self, unit: MigrationUnit, units_by_id: dict[str, MigrationUnit]
+    ) -> None:
         for dependent_id in unit.dependents:
             dependent = units_by_id[dependent_id]
-            if dependent.status in {UnitStatus.VERIFIED, UnitStatus.FAILED, UnitStatus.BLOCKED}:
+            if dependent.status in {
+                UnitStatus.VERIFIED,
+                UnitStatus.FAILED,
+                UnitStatus.BLOCKED,
+            }:
                 continue
             if self._dependencies_verified(dependent, units_by_id):
                 dependent.status = UnitStatus.READY
@@ -53,4 +63,7 @@ class UnitStateMachine:
         unit: MigrationUnit,
         units_by_id: dict[str, MigrationUnit],
     ) -> bool:
-        return all(units_by_id[dependency].status == UnitStatus.VERIFIED for dependency in unit.dependencies)
+        return all(
+            units_by_id[dependency].status == UnitStatus.VERIFIED
+            for dependency in unit.dependencies
+        )

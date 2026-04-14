@@ -11,7 +11,7 @@
 - unit context 裁剪骨架
 - migrator / tester / verifier / repairer / orchestrator 主循环骨架
 - `uv` 管理的 CLI 工程
-- 多语言 adapter 架构骨架，当前已落地 Python，其他语言为扩展点
+- 多语言 adapter 架构骨架，当前已落地 Python / Node.js / Java（Java 为静态启发式增强分析）
 
 ## API Key 放置方式
 
@@ -80,7 +80,7 @@ uv run codetranslate \
 以下能力目前还是第一版边界内的骨架或弱实现：
 
 - DFG / 更完整 CFG
-- 复杂动态调用、反射、异步链路、中间件分析
+- Java 已补充静态启发式：反射 / 注解 / IoC 容器分析、复杂动态调用提示、中间件识别与语义抽取、异步链路还原；但仍非完整语义级/字节码级分析
 - 精细的行为对齐测试生成
 - 真实最小 patch 级代码修复
 - 模块级和系统级的真实 build / startup / smoke 路径验证

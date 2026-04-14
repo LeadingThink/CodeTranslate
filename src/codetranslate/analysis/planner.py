@@ -48,7 +48,7 @@ class MigrationPlanner:
         for unit in units:
             if unit.risk_level == RiskLevel.HIGH:
                 unit.status = (
-                    UnitStatus.BLOCKED if unit.dependencies else UnitStatus.READY
+                    UnitStatus.ANALYZED if unit.dependencies else UnitStatus.READY
                 )
             elif not unit.dependencies:
                 unit.status = UnitStatus.READY

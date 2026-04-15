@@ -84,6 +84,12 @@ class MigrationPlanner:
         entrypoint_modules: set[str],
     ) -> MigrationUnit:
         source_path = project_root / source_file.path
+        # Sibling Maven modules live next to project_root, not under it.
+        # Their source_file.path is relative to project_root.parent.
+        if not source_path.exists():
+            candidate = project_root.parent / source_file.path
+            if candidate.exists():
+                source_path = candidate
         source_code = source_path.read_text(encoding="utf-8")
         public_symbols = [
             str(getattr(symbol, "name"))

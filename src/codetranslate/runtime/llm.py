@@ -16,6 +16,7 @@ from langchain_openai import ChatOpenAI
 
 from ..core.models import ProjectPaths, UnitContext
 from ..core.settings import AppSettings
+from ..analysis.sibling_scanner import analyze_java_directory
 from .language_runtime import run_test_file as runtime_run_test_file
 from .language_runtime import validate_source_file
 from .reporter import get_reporter
@@ -431,6 +432,27 @@ def _build_agent_tools() -> list[Any]:
         get_reporter().tool("run_test_file", str(resolved), "ok")
         return payload
 
+    @tool
+    def analyze_java_module(directory: str) -> str:
+        """Run full Java dependency analysis on an arbitrary directory.
+
+        Discovers all .java files, extracts imports, symbols (classes,
+        methods, fields), and builds the complete module dependency graph.
+        Use this when you encounter an import that points to a class not yet
+        migrated – the returned analysis shows what symbols the module
+        defines and what it depends on, so you can write correct Python
+        code instead of guessing.
+        """
+        result = analyze_java_directory(directory)
+        payload = json.dumps(result, ensure_ascii=False, default=str)
+        logger.info(
+            "Tool Call `analyze_java_module`\ndirectory=%s\nresult=%s",
+            directory,
+            _truncate_block(payload),
+        )
+        get_reporter().tool("analyze_java_module", directory, "ok")
+        return payload
+
     return [
         list_dir,
         read_file,
@@ -440,6 +462,7 @@ def _build_agent_tools() -> list[Any]:
         copy_path,
         validate_file,
         run_test_file,
+        analyze_java_module,
     ]
 
 

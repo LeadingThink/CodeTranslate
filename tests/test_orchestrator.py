@@ -190,6 +190,64 @@ class PlanRefreshTests(unittest.TestCase):
         self.assertEqual(len(rebuilt_units), 2)
         self.assertEqual({unit.module for unit in rebuilt_units}, {"module.a", "module.b"})
 
+    def test_plan_sanitizes_generated_target_paths(self) -> None:
+        analysis = AnalysisResult(
+            project_root=str(self.project_root),
+            scan=ProjectScanSummary(
+                project_root=str(self.project_root),
+                source_directories=[],
+                test_directories=[],
+                resource_directories=[],
+                config_files=[],
+                languages=["java"],
+                frameworks=[],
+                build_tools=["maven"],
+                dependency_managers=["maven"],
+                entrypoints=[],
+                candidate_entrypoints=[],
+                files_scanned=1,
+            ),
+            source_files=[
+                SourceFileRecord(
+                    path="validator-api/src/main/java/net/pinnacle21/validator/api/My-Class.java",
+                    language="java",
+                    module="module.sample",
+                    role="source",
+                )
+            ],
+            module_dependencies=[],
+            entrypoints=[],
+            symbols=[],
+            models=[],
+            call_graph=[],
+            ir=ProjectIR(nodes=[], edges=[]),
+            risk_nodes=[],
+            project_insights={},
+        )
+        source_path = (
+            self.project_root.parent
+            / "validator-api"
+            / "src"
+            / "main"
+            / "java"
+            / "net"
+            / "pinnacle21"
+            / "validator"
+            / "api"
+            / "My-Class.java"
+        )
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text("class MyClass {}", encoding="utf-8")
+
+        rebuilt_units = self.orchestrator.plan(analysis)
+
+        self.assertEqual(len(rebuilt_units), 1)
+        self.assertTrue(
+            rebuilt_units[0].target_file_path.endswith(
+                "validator_api\\src\\main\\java\\net\\pinnacle21\\validator\\api\\My_Class.py"
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

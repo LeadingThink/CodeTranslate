@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from codetranslate.core.path_utils import normalize_user_path
+from codetranslate.core.path_utils import (
+    normalize_user_path,
+    sanitize_path_component,
+    sanitize_target_relative_path,
+)
 
 
 class NormalizeUserPathTests(unittest.TestCase):
@@ -24,6 +28,20 @@ class NormalizeUserPathTests(unittest.TestCase):
         ):
             path = normalize_user_path(r"D:\study\CodeTranslate")
         self.assertEqual(str(path), "/mnt/d/study/CodeTranslate")
+
+
+class SanitizeTargetPathTests(unittest.TestCase):
+    def test_sanitize_path_component_replaces_invalid_characters(self) -> None:
+        self.assertEqual(sanitize_path_component("validator-api"), "validator_api")
+
+    def test_sanitize_target_relative_path_normalizes_directories_and_filename(self) -> None:
+        path = sanitize_target_relative_path(
+            "validator-api/src/main/java/net/pinnacle21/My-Class.py"
+        )
+        self.assertEqual(
+            str(path).replace("\\", "/"),
+            "validator_api/src/main/java/net/pinnacle21/My_Class.py",
+        )
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from langchain_openai import ChatOpenAI
 
 from ..core.models import AnalysisResult, MigrationRequest
 from ..core.settings import AppSettings
-from ..runtime.reporter import get_reporter
+from ..runtime.reporter import extract_token_usage, get_reporter
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +61,11 @@ class ProjectIntelligenceAnalyzer:
             )
             return {}
         content = self._extract_final_text(result)
+        token_usage = extract_token_usage(result)
         logger.info("Analysis LLM Response\n%s", _truncate_block(content))
-        get_reporter().model("analysis-response", content)
+        get_reporter().model(
+            "analysis-response", content, token_usage=token_usage
+        )
         return self._parse_insights(content)
 
     def _build_model(self) -> ChatOpenAI | None:

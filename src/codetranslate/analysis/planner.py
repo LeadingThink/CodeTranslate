@@ -11,6 +11,7 @@ from ..core.models import (
     SourceFileRecord,
     UnitStatus,
 )
+from ..core.path_utils import sanitize_target_relative_path
 
 
 class MigrationPlanner:
@@ -127,9 +128,12 @@ class MigrationPlanner:
         self, source_relative_path: Path, target_language: str
     ) -> Path:
         target_suffix = self._default_suffix_for_language(target_language)
-        if not target_suffix:
-            return source_relative_path
-        return source_relative_path.with_suffix(target_suffix)
+        target_path = (
+            source_relative_path.with_suffix(target_suffix)
+            if target_suffix
+            else source_relative_path
+        )
+        return sanitize_target_relative_path(target_path)
 
     def _default_suffix_for_language(self, language: str) -> str:
         suffix_by_language = {

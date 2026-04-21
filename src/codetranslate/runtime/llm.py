@@ -19,7 +19,7 @@ from ..core.settings import AppSettings
 from ..analysis.sibling_scanner import analyze_java_directory
 from .language_runtime import run_test_file as runtime_run_test_file
 from .language_runtime import validate_source_file
-from .reporter import get_reporter
+from .reporter import extract_token_usage, get_reporter
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class AgentContext:
 
 
 class LLMClient:
+    MAX_AGENT_ATTEMPTS = 2
     SYSTEM_PROMPT = (
         "You are a code migration agent.\n"
         "You must complete work by calling tools.\n"
@@ -96,24 +97,59 @@ class LLMClient:
     def _run_agent(self, task: str, required_paths: list[str]) -> str:
         logger.info("LLM Request\n%s", _truncate_block(task))
         get_reporter().model("request", task.splitlines()[0] if task else "request")
-        try:
-            result = self.agent.invoke(
-                {"messages": [{"role": "user", "content": task}]},
-                context=AgentContext(paths=self.paths),
-            )
-        except Exception as exc:
-            self._debug_dump_raw_model_output(task, exc)
-            raise RuntimeError(f"LangChain agent invocation failed: {exc}") from exc
+        latest_error: Exception | None = None
+        current_task = task
 
-        missing = [path for path in required_paths if not Path(path).exists()]
-        if missing:
+        for attempt in range(1, self.MAX_AGENT_ATTEMPTS + 1):
+            try:
+                result = self.agent.invoke(
+                    {"messages": [{"role": "user", "content": current_task}]},
+                    context=AgentContext(paths=self.paths),
+                )
+                missing = [path for path in required_paths if not Path(path).exists()]
+                if missing:
+                    raise RuntimeError(
+                        f"Agent finished without writing required files: {missing}"
+                    )
+
+                final_text = self._extract_final_text(result)
+                token_usage = extract_token_usage(result)
+                logger.info("LLM Response\n%s", _truncate_block(final_text))
+                get_reporter().model("response", final_text, token_usage=token_usage)
+                return final_text
+            except Exception as exc:
+                latest_error = exc
+                if attempt >= self.MAX_AGENT_ATTEMPTS:
+                    break
+                logger.warning(
+                    "Agent attempt %s/%s failed and will be retried: %s",
+                    attempt,
+                    self.MAX_AGENT_ATTEMPTS,
+                    exc,
+                )
+                current_task = self._build_retry_task(task, exc, attempt + 1)
+
+        if latest_error is not None:
+            self._debug_dump_raw_model_output(current_task, latest_error)
             raise RuntimeError(
-                f"Agent finished without writing required files: {missing}"
+                f"LangChain agent invocation failed: {latest_error}"
             )
-        final_text = self._extract_final_text(result)
-        logger.info("LLM Response\n%s", _truncate_block(final_text))
-        get_reporter().model("response", final_text)
-        return final_text
+        raise RuntimeError("LangChain agent invocation failed with an unknown error.")
+
+    def _build_retry_task(
+        self, original_task: str, error: Exception, attempt_number: int
+    ) -> str:
+        return (
+            f"{original_task}\n\n"
+            "Previous attempt failed. Self-correct and try again using tools.\n"
+            f"Retry attempt: {attempt_number}/{self.MAX_AGENT_ATTEMPTS}\n"
+            f"Observed error: {error}\n"
+            "Correction requirements:\n"
+            "- Treat the observed error as authoritative feedback from the runtime.\n"
+            "- Re-check exact file paths with exists or list_dir before calling read_file.\n"
+            "- Do not reuse the failing path unless the tools confirm it exists.\n"
+            "- If the required file is missing at the end, write it to the exact requested path before finishing.\n"
+        )
 
     def _extract_final_text(self, result: dict[str, Any]) -> str:
         messages = result.get("messages", [])
@@ -235,6 +271,8 @@ class LLMClient:
             "- Prefer validating exported file behavior and cross-symbol contracts over isolated fragment behavior.\n"
             f"- Default project paths are: source_root={self.paths.source_root}, workspace_root={self.paths.workspace_root}, target_root={self.paths.target_root}.\n"
             "- Absolute source paths from other mounted projects may be read when needed.\n"
+            "- Use the exact target file path given above; do not infer or rewrite it from package names or sibling modules.\n"
+            "- Before reading any dependency or migrated target file, verify the exact path with exists or discover it with list_dir.\n"
             "- If a related resource is needed for the test, use an already staged path when available; otherwise use copy_path to mirror it into target_root or workspace_root before reading it.\n"
             f"- Before finishing, call validate_file on {test_path}.\n\n"
             f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -21,14 +22,29 @@ class ConsoleReporter:
     width: int = 24
 
     def stage(self, title: str, detail: str = "") -> None:
-        print(f"[stage] {title}" + (f" | {detail}" if detail else ""))
+        self._emit(f"[stage] {title}" + (f" | {detail}" if detail else ""))
 
     def tool(self, name: str, target: str, status: str = "ok") -> None:
-        print(f"[tool] {name} | {target} | {status}")
+        self._emit(f"[tool] {name} | {target} | {status}")
 
-    def model(self, label: str, detail: str = "") -> None:
+    def model(
+        self,
+        label: str,
+        detail: str = "",
+        token_usage: dict[str, int] | None = None,
+    ) -> None:
         summary = detail.strip().splitlines()[0] if detail.strip() else ""
-        print(f"[model] {label}" + (f" | {summary[:160]}" if summary else ""))
+        message = f"[model] {label}"
+        if summary:
+            message += f" | {summary[:160]}"
+        if token_usage:
+            message += (
+                " | tokens"
+                f" in={token_usage.get('input_tokens', 0)}"
+                f" out={token_usage.get('output_tokens', 0)}"
+                f" total={token_usage.get('total_tokens', 0)}"
+            )
+        self._emit(message)
 
     def progress(
         self, completed: int, total: int, current: str = "", remaining_chain: str = ""
@@ -41,10 +57,16 @@ class ConsoleReporter:
             message += f" | current={Path(current).name}"
         if remaining_chain:
             message += f" | chain={remaining_chain}"
-        print(message)
+        self._emit(message)
 
     def result(self, title: str, status: str, detail: str = "") -> None:
-        print(f"[result] {title} | {status}" + (f" | {detail[:220]}" if detail else ""))
+        self._emit(
+            f"[result] {title} | {status}" + (f" | {detail[:220]}" if detail else "")
+        )
+
+    def _emit(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        print(f"[{timestamp}] {message}")
 
 
 def start_interactive_session() -> None:

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codetranslate.app.interactive import _create_prompt_session, _prompt
+from codetranslate.app.interactive import ConsoleReporter, _create_prompt_session, _prompt
 
 
 class InteractivePromptTests(unittest.TestCase):
@@ -46,6 +46,25 @@ class InteractivePromptTests(unittest.TestCase):
         session.prompt.assert_called_once_with(
             "Action [analyze|plan|run] [run]: ", default="run"
         )
+
+    def test_console_reporter_model_includes_token_usage(self) -> None:
+        reporter = ConsoleReporter()
+
+        with patch("builtins.print") as print_mock:
+            reporter.model(
+                "response",
+                "Done.\nextra lines are ignored",
+                token_usage={
+                    "input_tokens": 120,
+                    "output_tokens": 45,
+                    "total_tokens": 165,
+                },
+            )
+
+        self.assertEqual(print_mock.call_count, 1)
+        printed = print_mock.call_args.args[0]
+        self.assertIn("[model] response | Done.", printed)
+        self.assertIn("tokens in=120 out=45 total=165", printed)
 
 
 if __name__ == "__main__":

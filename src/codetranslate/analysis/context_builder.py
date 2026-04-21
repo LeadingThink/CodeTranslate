@@ -33,10 +33,23 @@ class UnitContextBuilder:
             f"# FILE: {item['path']}\n{item['content']}" for item in batch_sources
         )
         dependency_summaries = []
+        dependency_targets = []
         for dependency_id in unit.dependencies:
             dependency = units_by_id[dependency_id]
+            dependency_paths = dependency.batch_target_file_paths or [
+                dependency.target_file_path
+            ]
             dependency_summaries.append(
-                f"{dependency.name}: migrated to {', '.join(dependency.batch_target_file_paths or [dependency.target_file_path])}"
+                f"{dependency.name}: migrated to {', '.join(dependency_paths)}"
+            )
+            dependency_targets.extend(
+                {
+                    "unit_id": dependency.unit_id,
+                    "name": dependency.name,
+                    "module": dependency.module,
+                    "target_path": path,
+                }
+                for path in dependency_paths
             )
         module_imports = self._extract_module_imports(source_file_content)
         decorators = self._resolve_decorators(unit, module_symbols)
@@ -59,6 +72,7 @@ class UnitContextBuilder:
             signature=unit.signature,
             summary=f"{unit.language} {unit.kind} {unit.name} from module {unit.module}",
             module_imports=module_imports,
+            dependency_targets=dependency_targets,
             decorators=decorators,
             module_level_context=module_level_context,
             input_models=models,

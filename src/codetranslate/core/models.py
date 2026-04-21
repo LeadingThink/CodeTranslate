@@ -212,6 +212,7 @@ class UnitContext:
     signature: str | None
     summary: str
     module_imports: list[str]
+    dependency_targets: list[dict[str, str]]
     decorators: list[str]
     module_level_context: str
     input_models: list[str]

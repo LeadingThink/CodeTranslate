@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from codetranslate.core.models import MigrationRequest, ProjectPaths
+from codetranslate.core.models import MigrationRequest, ProjectPaths, UnitContext
 from codetranslate.runtime.llm import LLMClient
 
 
@@ -57,6 +57,58 @@ class LLMClientRetryTests(unittest.TestCase):
             self.assertIn("Previous attempt failed", client.agent.calls[1])
             self.assertIn("file does not exist: missing.py", client.agent.calls[1])
             self.assertTrue(output_path.exists())
+
+    def test_migration_task_explicitly_forbids_java_style_python_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            client = object.__new__(LLMClient)
+            client.paths = ProjectPaths(
+                source_root=str(temp_root / "source"),
+                workspace_root=str(temp_root / "workspace"),
+                target_root=str(temp_root / "target"),
+                request=MigrationRequest(
+                    source_language="java",
+                    target_language="python",
+                ),
+            )
+
+            context = UnitContext(
+                unit_id="sample.unit",
+                source_code="import a.b.C;",
+                source_file_content="import a.b.C;",
+                signature="file sample.unit",
+                summary="java file Sample from module sample.unit",
+                module_imports=["import a.b.C;"],
+                dependency_targets=[
+                    {
+                        "unit_id": "dep.unit",
+                        "name": "C",
+                        "module": "a.b.C",
+                        "target_path": str(temp_root / "target" / "pkg" / "c.py"),
+                    }
+                ],
+                decorators=[],
+                module_level_context="execution_unit=file module=sample.unit",
+                input_models=[],
+                output_models=[],
+                direct_dependencies=["dep.unit"],
+                dependency_summaries=["C: migrated to pkg/c.py"],
+                target_file_path=str(temp_root / "target" / "pkg" / "sample.py"),
+                target_file_paths=[str(temp_root / "target" / "pkg" / "sample.py")],
+                target_constraints={
+                    "source_language": "java",
+                    "language": "python",
+                    "strategy": "high-fidelity incremental migration",
+                    "preserve_behavior": True,
+                },
+                test_requirements=[],
+            )
+
+            task = client._build_migration_task(context)
+
+            self.assertIn("Dependency target files:", task)
+            self.assertIn("do not keep Java package/import syntax", task)
+            self.assertIn("Do not emit imports like `from net... import ...`", task)
 
 
 if __name__ == "__main__":

@@ -12,15 +12,23 @@ class Repairer:
         self.llm = llm
         self.workspace = workspace
 
-    def repair(self, unit: MigrationUnit, context: UnitContext, failure_log: str, test_path: Path) -> bool:
+    def repair(
+        self,
+        unit: MigrationUnit,
+        context: UnitContext,
+        failure_log: str,
+        test_path: Path,
+    ) -> bool:
         unit.status = UnitStatus.REPAIRING
         unit.retry_count += 1
         action = self.llm.repair_artifact(context, failure_log, str(test_path))
         failure_type = self._classify_failure(failure_log)
+        target_paths = [
+            Path(path)
+            for path in (unit.batch_target_file_paths or [unit.target_file_path])
+        ]
         impact_scope = [
-            str(path)
-            for path in (Path(unit.target_file_path), test_path)
-            if path.exists()
+            str(path) for path in (*target_paths, test_path) if path.exists()
         ]
         record = RepairRecord(
             unit_id=unit.unit_id,
@@ -28,7 +36,11 @@ class Repairer:
             failure_type=failure_type,
             failure_reason=failure_log[:500],
             action=action,
-            impact_scope=impact_scope or [unit.target_file_path, str(test_path)],
+            impact_scope=impact_scope
+            or [
+                *(str(path) for path in target_paths),
+                str(test_path),
+            ],
             verification_passed=False,
         )
         self.workspace.save_repair_record(record)

@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from pydantic import SecretStr
 
 from langchain.agents import create_agent
 from langchain.tools import tool
@@ -15,6 +16,7 @@ from langchain_openai import ChatOpenAI
 
 from ..core.models import ProjectPaths, UnitContext
 from ..core.settings import AppSettings
+from ..analysis.sibling_scanner import analyze_java_directory
 from .language_runtime import run_test_file as runtime_run_test_file
 from .language_runtime import validate_source_file
 from .reporter import get_reporter
@@ -52,7 +54,7 @@ class LLMClient:
     def generate_code(self, context: UnitContext) -> LLMGeneration:
         rationale = self._run_agent(
             task=self._build_migration_task(context),
-            required_paths=[context.target_file_path],
+            required_paths=context.target_file_paths or [context.target_file_path],
         )
         return LLMGeneration(rationale=rationale)
 
@@ -67,7 +69,10 @@ class LLMClient:
     ) -> str:
         return self._run_agent(
             task=self._build_repair_task(context, failure_log, test_path),
-            required_paths=[context.target_file_path, test_path],
+            required_paths=[
+                *(context.target_file_paths or [context.target_file_path]),
+                test_path,
+            ],
         )
 
     def _build_model(self) -> ChatOpenAI:
@@ -75,7 +80,7 @@ class LLMClient:
             raise RuntimeError("Missing API key for LangChain agent model.")
         return ChatOpenAI(
             base_url=self.settings.base_url,
-            api_key=self.settings.api_key,
+            api_key=SecretStr(self.settings.api_key or ""),  # type: ignore[arg-type]
             model=self.settings.model_name,
             temperature=0,
         )
@@ -169,12 +174,14 @@ class LLMClient:
         target_language = context.target_constraints.get("language", "python")
         source_fence = self._code_fence_language(source_language)
         return (
-            "Migrate one source file into the target file by using tools.\n"
+            "Migrate one source file or one tightly-coupled cycle batch into the target file(s) by using tools.\n"
             f"Unit: {context.unit_id}\n"
             f"Summary: {context.summary}\n"
             f"User-selected source language: {source_language}\n"
             f"User-selected target language: {target_language}\n"
             f"Target path: {context.target_file_path}\n"
+            f"Target paths: {json.dumps(context.target_file_paths, ensure_ascii=False)}\n"
+            f"Batch sources: {json.dumps([item['path'] for item in context.batch_sources], ensure_ascii=False)}\n"
             f"Decorators: {json.dumps(context.decorators, ensure_ascii=False)}\n"
             f"Module imports: {json.dumps(context.module_imports, ensure_ascii=False)}\n"
             f"Dependency summaries: {json.dumps(context.dependency_summaries, ensure_ascii=False)}\n"
@@ -184,18 +191,19 @@ class LLMClient:
             f"Java-to-Python migration hints: {json.dumps(context.java_migration_hints, ensure_ascii=False)}\n"
             f"Module-level context:\n{context.module_level_context}\n"
             "Requirements:\n"
-            f"- You must write the final migrated file to {context.target_file_path} using write_file.\n"
+            f"- You must write every final migrated file listed in {json.dumps(context.target_file_paths, ensure_ascii=False)} using write_file.\n"
             "- Preserve complete file-level behavior and cross-symbol consistency.\n"
+            "- If this is a cycle batch, coordinate imports/contracts across all files in the batch before finishing.\n"
             f"- Default project paths are: source_root={self.paths.source_root}, workspace_root={self.paths.workspace_root}, target_root={self.paths.target_root}.\n"
-            "- First call exists on the target path before attempting to read it.\n"
-            "- Only call read_file on the target path if exists reports exists=true.\n"
-            "- If the target file does not exist yet, do not call read_file on it; write the full migrated file directly.\n"
-            "- If the target file exists, read it first and merge carefully at file scope.\n"
+            "- First call exists on each target path before attempting to read it.\n"
+            "- Only call read_file on a target path if exists reports exists=true.\n"
+            "- If a target file does not exist yet, do not call read_file on it; write the full migrated file directly.\n"
+            "- If a target file exists, read it first and merge carefully at file scope.\n"
             "- Do not put tests or markdown into the target source file.\n"
             "- Preserve semantics covered by related tests and resource fixtures when they exist.\n"
             "- Absolute source paths from other mounted projects may be read when needed.\n"
             "- If you need a related resource fixture in the translated project, first copy it into workspace_root or target_root with copy_path, then prefer the copied path.\n"
-            f"- Before finishing, call validate_file on {context.target_file_path}.\n\n"
+            f"- Before finishing, call validate_file on each target path in {json.dumps(context.target_file_paths, ensure_ascii=False)}.\n\n"
             f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
             f"Source code:\n```{source_fence}\n{context.source_code}\n```"
         )
@@ -211,6 +219,7 @@ class LLMClient:
             f"User-selected source language: {source_language}\n"
             f"User-selected target language: {target_language}\n"
             f"Target file: {context.target_file_path}\n"
+            f"Target files: {json.dumps(context.target_file_paths, ensure_ascii=False)}\n"
             f"Test path: {test_path}\n"
             f"Decorators: {json.dumps(context.decorators, ensure_ascii=False)}\n"
             f"Module imports: {json.dumps(context.module_imports, ensure_ascii=False)}\n"
@@ -244,6 +253,7 @@ class LLMClient:
             f"User-selected source language: {source_language}\n"
             f"User-selected target language: {target_language}\n"
             f"Target file: {context.target_file_path}\n"
+            f"Target files: {json.dumps(context.target_file_paths, ensure_ascii=False)}\n"
             f"Test file: {test_path}\n"
             f"Decorators: {json.dumps(context.decorators, ensure_ascii=False)}\n"
             f"Module imports: {json.dumps(context.module_imports, ensure_ascii=False)}\n"
@@ -422,6 +432,27 @@ def _build_agent_tools() -> list[Any]:
         get_reporter().tool("run_test_file", str(resolved), "ok")
         return payload
 
+    @tool
+    def analyze_java_module(directory: str) -> str:
+        """Run full Java dependency analysis on an arbitrary directory.
+
+        Discovers all .java files, extracts imports, symbols (classes,
+        methods, fields), and builds the complete module dependency graph.
+        Use this when you encounter an import that points to a class not yet
+        migrated – the returned analysis shows what symbols the module
+        defines and what it depends on, so you can write correct Python
+        code instead of guessing.
+        """
+        result = analyze_java_directory(directory)
+        payload = json.dumps(result, ensure_ascii=False, default=str)
+        logger.info(
+            "Tool Call `analyze_java_module`\ndirectory=%s\nresult=%s",
+            directory,
+            _truncate_block(payload),
+        )
+        get_reporter().tool("analyze_java_module", directory, "ok")
+        return payload
+
     return [
         list_dir,
         read_file,
@@ -431,6 +462,7 @@ def _build_agent_tools() -> list[Any]:
         copy_path,
         validate_file,
         run_test_file,
+        analyze_java_module,
     ]
 
 

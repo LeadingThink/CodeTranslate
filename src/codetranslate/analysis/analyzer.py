@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from ..core.models import (
@@ -11,6 +12,9 @@ from ..core.models import (
 from .build_analysis import JavaBaselineRunner
 from .language_registry import LanguageRegistry
 from .project_intelligence import ProjectIntelligenceAnalyzer
+from .sibling_scanner import analyze_sibling_modules
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectAnalyzer:
@@ -85,6 +89,12 @@ class ProjectAnalyzer:
             risk_nodes=sorted(risk_nodes),
             project_insights=project_insights,
         )
+
+        # Analyse sibling Maven modules (e.g. validator-api) whose classes
+        # are imported by the main project but live outside project_root.
+        if request.source_language == "java":
+            self._integrate_sibling_analysis(result, self.registry)
+
         if self.intelligence is not None:
             self._merge_project_insight_maps(
                 result.project_insights, self.intelligence.enrich(result, request)
@@ -93,6 +103,33 @@ class ProjectAnalyzer:
                 result.project_insights
             )
         return result
+
+    def _integrate_sibling_analysis(
+        self, result: AnalysisResult, registry: LanguageRegistry
+    ) -> None:
+        """Run full Java adapter analysis on sibling Maven modules and merge
+        the results (source_files, module_dependencies, symbols, …) into
+        *result* so the planner sees a complete dependency graph."""
+        sibling = analyze_sibling_modules(result, registry)
+        if not sibling.source_files:
+            return
+
+        result.source_files.extend(sibling.source_files)
+        result.module_dependencies.extend(sibling.module_dependencies)
+        result.symbols.extend(sibling.symbols)
+        result.models.extend(sibling.models)
+        result.call_graph.extend(sibling.call_graph)
+        result.ir.nodes.extend(sibling.ir_nodes)
+        result.ir.edges.extend(sibling.call_graph)
+        result.risk_nodes = sorted(set(result.risk_nodes) | set(sibling.risk_nodes))
+        result.entrypoints.extend(sibling.entrypoints)
+
+        logger.info(
+            "Integrated sibling module analysis: %d source files, %d dependencies from %s",
+            len(sibling.source_files),
+            len(sibling.module_dependencies),
+            sibling.sibling_roots_scanned,
+        )
 
     def _merge_project_insight_maps(
         self, base: dict[str, object], incoming: dict[str, object]

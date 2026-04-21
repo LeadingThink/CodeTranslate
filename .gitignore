@@ -10,3 +10,4 @@ generated_target/
 .env
 .env.local
 examples/
+output

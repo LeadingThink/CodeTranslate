@@ -8,6 +8,7 @@ from typing import Any
 from ..core.models import (
     AnalysisResult,
     MigrationUnit,
+    MavenModuleRecord,
     PipelineState,
     ProjectPaths,
     ProjectScanSummary,
@@ -167,6 +168,12 @@ class WorkspaceManager:
                 unit.unit_id: {
                     "dependencies": unit.dependencies,
                     "dependents": unit.dependents,
+                    "cycle_group": unit.cycle_group,
+                    "cycle_peers": unit.cycle_peers,
+                    "kind": unit.kind,
+                    "batch_members": unit.batch_members,
+                    "batch_file_paths": unit.batch_file_paths,
+                    "batch_target_file_paths": unit.batch_target_file_paths,
                 }
                 for unit in units
             },
@@ -175,6 +182,11 @@ class WorkspaceManager:
         for unit in units:
             module_graph.setdefault(unit.module, []).append(unit.unit_id)
         self.write_json("plan/module_graph.json", module_graph)
+        cycle_groups: dict[str, list[str]] = {}
+        for unit in units:
+            if unit.cycle_group:
+                cycle_groups.setdefault(unit.cycle_group, []).append(unit.unit_id)
+        self.write_json("plan/cycle_groups.json", cycle_groups)
 
     def save_context(self, context: UnitContext) -> None:
         self.write_json(f"contexts/{context.unit_id}.json", context)
@@ -234,6 +246,11 @@ class WorkspaceManager:
                     "target_language", item.get("language", "python")
                 ),
                 "project_module": item.get("project_module"),
+                "cycle_group": item.get("cycle_group"),
+                "cycle_peers": item.get("cycle_peers", []),
+                "batch_members": item.get("batch_members", []),
+                "batch_file_paths": item.get("batch_file_paths", []),
+                "batch_target_file_paths": item.get("batch_target_file_paths", []),
                 "status": UnitStatus(
                     status_row.get(
                         "status", item.get("status", UnitStatus.DISCOVERED.value)
@@ -281,6 +298,58 @@ class WorkspaceManager:
         )
         self.save_pipeline_state(state)
         return state
+
+    def load_pipeline_state(self) -> PipelineState | None:
+        try:
+            data = self.read_json("state/pipeline_state.json")
+            return PipelineState(
+                project_root=data.get("project_root", ""),
+                workspace_root=data.get("workspace_root", ""),
+                target_root=data.get("target_root", ""),
+                initialized=data.get("initialized", False),
+                analyzed=data.get("analyzed", False),
+                planned=data.get("planned", False),
+                completed_units=data.get("completed_units", 0),
+                failed_units=data.get("failed_units", []),
+                blocked_units=data.get("blocked_units", []),
+            )
+        except FileNotFoundError:
+            return None
+
+    def load_scan(self) -> ProjectScanSummary:
+        data = self.read_json("analysis/project_scan.json")
+        maven_modules_raw = data.get("maven_modules", [])
+        maven_modules = [
+            MavenModuleRecord(
+                name=m.get("name", ""),
+                relative_path=m.get("relative_path", ""),
+                pom_path=m.get("pom_path", ""),
+                packaging=m.get("packaging", "jar"),
+                parent=m.get("parent"),
+                dependencies=m.get("dependencies", []),
+                source_roots=m.get("source_roots", []),
+                test_roots=m.get("test_roots", []),
+                resource_roots=m.get("resource_roots", []),
+            )
+            for m in maven_modules_raw
+        ]
+        return ProjectScanSummary(
+            project_root=data.get("project_root", ""),
+            source_directories=data.get("source_directories", []),
+            test_directories=data.get("test_directories", []),
+            resource_directories=data.get("resource_directories", []),
+            config_files=data.get("config_files", []),
+            languages=data.get("languages", []),
+            frameworks=data.get("frameworks", []),
+            build_tools=data.get("build_tools", []),
+            dependency_managers=data.get("dependency_managers", []),
+            entrypoints=data.get("entrypoints", []),
+            candidate_entrypoints=data.get("candidate_entrypoints", []),
+            files_scanned=data.get("files_scanned", 0),
+            maven_modules=maven_modules,
+            test_files=data.get("test_files", []),
+            resource_files=data.get("resource_files", []),
+        )
 
     def _safe_read_json(self, relative_path: str, default: Any) -> Any:
         try:

@@ -191,6 +191,11 @@ class MigrationUnit:
     project_module: str | None = None
     dependencies: list[str] = field(default_factory=list)
     dependents: list[str] = field(default_factory=list)
+    cycle_group: str | None = None
+    cycle_peers: list[str] = field(default_factory=list)
+    batch_members: list[str] = field(default_factory=list)
+    batch_file_paths: list[str] = field(default_factory=list)
+    batch_target_file_paths: list[str] = field(default_factory=list)
     risk_level: RiskLevel = RiskLevel.LOW
     test_requirements: list[str] = field(default_factory=list)
     status: UnitStatus = UnitStatus.DISCOVERED
@@ -214,8 +219,10 @@ class UnitContext:
     direct_dependencies: list[str]
     dependency_summaries: list[str]
     target_file_path: str
+    target_file_paths: list[str]
     target_constraints: dict[str, Any]
     test_requirements: list[str]
+    batch_sources: list[dict[str, str]] = field(default_factory=list)
     related_tests: list[dict[str, str]] = field(default_factory=list)
     related_resources: list[dict[str, str]] = field(default_factory=list)
     build_context: dict[str, Any] = field(default_factory=dict)
@@ -262,7 +269,7 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value):
-        serialized = asdict(value)  # pyright: ignore[reportArgumentType]
+        serialized = asdict(value)  # type: ignore[arg-type]
         return {key: to_jsonable(item) for key, item in serialized.items()}
     if isinstance(value, dict):
         return {str(key): to_jsonable(item) for key, item in value.items()}

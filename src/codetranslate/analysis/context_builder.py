@@ -13,18 +13,30 @@ class UnitContextBuilder:
         analysis: AnalysisResult,
         units_by_id: dict[str, MigrationUnit],
     ) -> UnitContext:
-        source_file_content = Path(unit.file_path).read_text(encoding="utf-8")
-        models = [
-            model.name for model in analysis.models if model.file_path == unit.file_path
-        ]
-        module_symbols = [
-            symbol for symbol in analysis.symbols if symbol.file_path == unit.file_path
-        ]
+        source_paths = unit.batch_file_paths or [unit.file_path]
+        target_paths = unit.batch_target_file_paths or [unit.target_file_path]
+        batch_sources: list[dict[str, str]] = []
+        models: list[str] = []
+        module_symbols: list[object] = []
+        for source_path in source_paths:
+            content = Path(source_path).read_text(encoding="utf-8")
+            batch_sources.append({"path": source_path, "content": content})
+            models.extend(
+                model.name
+                for model in analysis.models
+                if model.file_path == source_path
+            )
+            module_symbols.extend(
+                symbol for symbol in analysis.symbols if symbol.file_path == source_path
+            )
+        source_file_content = "\n\n".join(
+            f"# FILE: {item['path']}\n{item['content']}" for item in batch_sources
+        )
         dependency_summaries = []
         for dependency_id in unit.dependencies:
             dependency = units_by_id[dependency_id]
             dependency_summaries.append(
-                f"{dependency.name}: migrated to {dependency.target_file_path}"
+                f"{dependency.name}: migrated to {', '.join(dependency.batch_target_file_paths or [dependency.target_file_path])}"
             )
         module_imports = self._extract_module_imports(source_file_content)
         decorators = self._resolve_decorators(unit, module_symbols)
@@ -35,6 +47,10 @@ class UnitContextBuilder:
         related_resources = self._related_resources(unit, analysis)
         build_context = self._build_context(unit, analysis)
         java_migration_hints = self._java_migration_hints(unit, analysis)
+        if unit.cycle_group and unit.cycle_peers:
+            dependency_summaries.append(
+                f"cyclic peers in {unit.cycle_group}: {', '.join(unit.cycle_peers)}"
+            )
 
         return UnitContext(
             unit_id=unit.unit_id,
@@ -50,6 +66,7 @@ class UnitContextBuilder:
             direct_dependencies=unit.dependencies,
             dependency_summaries=dependency_summaries,
             target_file_path=unit.target_file_path,
+            target_file_paths=target_paths,
             target_constraints={
                 "source_language": unit.language,
                 "language": unit.target_language,
@@ -57,6 +74,7 @@ class UnitContextBuilder:
                 "preserve_behavior": True,
             },
             test_requirements=unit.test_requirements,
+            batch_sources=batch_sources,
             related_tests=related_tests,
             related_resources=related_resources,
             build_context=build_context,
@@ -75,7 +93,7 @@ class UnitContextBuilder:
     def _resolve_decorators(
         self, unit: MigrationUnit, module_symbols: Sequence[object]
     ) -> list[str]:
-        if unit.kind in {"module", "file"}:
+        if unit.kind in {"module", "file", "cycle_batch"}:
             decorators: list[str] = []
             for symbol in module_symbols:
                 decorators.extend(getattr(symbol, "decorators", []))
@@ -92,6 +110,8 @@ class UnitContextBuilder:
         lines.append(
             f"execution_unit={unit.kind} module={unit.module} file={unit.file_path}"
         )
+        if unit.batch_members:
+            lines.append(f"batch_members={unit.batch_members}")
         for symbol in module_symbols:
             signature = getattr(symbol, "signature", None) or getattr(
                 symbol, "name", "unknown"
@@ -108,18 +128,29 @@ class UnitContextBuilder:
     def _related_tests(
         self, unit: MigrationUnit, analysis: AnalysisResult
     ) -> list[dict[str, str]]:
-        stem = Path(unit.file_path).stem.lower()
+        stems = {
+            Path(path).stem.lower()
+            for path in (unit.batch_file_paths or [unit.file_path])
+        }
         related: list[dict[str, str]] = []
         for test_path in analysis.scan.test_files:
             test_stem = Path(test_path).stem.lower()
-            if stem in test_stem or test_stem.replace("test", "") in stem:
+            if any(
+                stem in test_stem or test_stem.replace("test", "") in stem
+                for stem in stems
+            ):
                 related.append({"path": test_path, "kind": "test_file"})
         return related[:12]
 
     def _related_resources(
         self, unit: MigrationUnit, analysis: AnalysisResult
     ) -> list[dict[str, str]]:
-        segments = {part.lower() for part in Path(unit.file_path).parts if part}
+        segments = {
+            part.lower()
+            for path in (unit.batch_file_paths or [unit.file_path])
+            for part in Path(path).parts
+            if part
+        }
         related: list[dict[str, str]] = []
         for resource_path in analysis.scan.resource_files:
             resource_segments = {
@@ -150,6 +181,11 @@ class UnitContextBuilder:
             "project_module": unit.project_module,
             "maven_module": module_info,
             "java_baseline": baseline,
+            "cycle_group": unit.cycle_group,
+            "cycle_peers": unit.cycle_peers,
+            "batch_members": unit.batch_members,
+            "batch_file_paths": unit.batch_file_paths,
+            "batch_target_file_paths": unit.batch_target_file_paths,
         }
 
     def _java_migration_hints(

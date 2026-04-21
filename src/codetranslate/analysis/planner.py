@@ -44,6 +44,7 @@ class MigrationPlanner:
             unit_by_module[source_file.module] = unit
 
         self._attach_module_dependencies(analysis.module_dependencies, unit_by_module)
+        units = self._merge_cycle_batches(units)
 
         for unit in units:
             if unit.risk_level == RiskLevel.HIGH:
@@ -83,6 +84,12 @@ class MigrationPlanner:
         entrypoint_modules: set[str],
     ) -> MigrationUnit:
         source_path = project_root / source_file.path
+        # Sibling Maven modules live next to project_root, not under it.
+        # Their source_file.path is relative to project_root.parent.
+        if not source_path.exists():
+            candidate = project_root.parent / source_file.path
+            if candidate.exists():
+                source_path = candidate
         source_code = source_path.read_text(encoding="utf-8")
         public_symbols = [
             str(getattr(symbol, "name"))
@@ -193,3 +200,161 @@ class MigrationPlanner:
             source_unit.dependencies.append(target_unit.unit_id)
         if source_unit.unit_id not in target_unit.dependents:
             target_unit.dependents.append(source_unit.unit_id)
+
+    def _merge_cycle_batches(self, units: list[MigrationUnit]) -> list[MigrationUnit]:
+        units_by_id = {unit.unit_id: unit for unit in units}
+        graph = {
+            unit.unit_id: [
+                dependency_id
+                for dependency_id in unit.dependencies
+                if dependency_id in units_by_id
+            ]
+            for unit in units
+        }
+        components = self._strongly_connected_components(graph)
+        component_by_unit: dict[str, tuple[str, ...]] = {}
+        for component in components:
+            frozen = tuple(sorted(component))
+            for unit_id in frozen:
+                component_by_unit[unit_id] = frozen
+
+        rebuilt_units: list[MigrationUnit] = []
+        representative_by_component: dict[tuple[str, ...], MigrationUnit] = {}
+
+        for position, component in enumerate(components, start=1):
+            frozen = tuple(sorted(component))
+            if len(frozen) == 1:
+                unit = units_by_id[frozen[0]]
+                unit.batch_members = [unit.unit_id]
+                unit.batch_file_paths = [unit.file_path]
+                unit.batch_target_file_paths = [unit.target_file_path]
+                representative_by_component[frozen] = unit
+                rebuilt_units.append(unit)
+                continue
+
+            members = [units_by_id[unit_id] for unit_id in frozen]
+            cycle_group = f"cycle_group_{position:03d}"
+            batch_unit = self._build_cycle_batch_unit(members, cycle_group)
+            representative_by_component[frozen] = batch_unit
+            rebuilt_units.append(batch_unit)
+
+        for component, batch_unit in representative_by_component.items():
+            dependency_ids: set[str] = set()
+            dependent_ids: set[str] = set()
+            component_members = set(component)
+            for member_id in component_members:
+                for dependency_id in graph.get(member_id, []):
+                    dependency_component = component_by_unit[dependency_id]
+                    if dependency_component == component:
+                        continue
+                    dependency_ids.add(
+                        representative_by_component[dependency_component].unit_id
+                    )
+                for other_unit in units:
+                    if member_id in other_unit.dependencies:
+                        dependent_component = component_by_unit[other_unit.unit_id]
+                        if dependent_component == component:
+                            continue
+                        dependent_ids.add(
+                            representative_by_component[dependent_component].unit_id
+                        )
+            batch_unit.dependencies = sorted(dependency_ids)
+            batch_unit.dependents = sorted(dependent_ids)
+
+        return rebuilt_units
+
+    def _build_cycle_batch_unit(
+        self, members: list[MigrationUnit], cycle_group: str
+    ) -> MigrationUnit:
+        sorted_members = sorted(members, key=lambda unit: unit.file_path)
+        lead = sorted_members[0]
+        member_names = [Path(unit.file_path).name for unit in sorted_members]
+        test_requirements = list(
+            dict.fromkeys(
+                [
+                    requirement
+                    for unit in sorted_members
+                    for requirement in unit.test_requirements
+                ]
+                + [
+                    "batch imports successfully across cyclic members",
+                    "cross-file cyclic contracts remain stable after migration",
+                ]
+            )
+        )
+        return MigrationUnit(
+            unit_id=cycle_group,
+            symbol_id=f"{cycle_group}:batch",
+            name=f"cycle batch {'/'.join(Path(unit.file_path).stem for unit in sorted_members)}",
+            language=lead.language,
+            target_language=lead.target_language,
+            module=lead.module,
+            project_module=lead.project_module,
+            file_path=lead.file_path,
+            target_file_path=lead.target_file_path,
+            kind="cycle_batch",
+            source_code="\n\n".join(
+                f"// FILE: {unit.file_path}\n{unit.source_code}"
+                for unit in sorted_members
+            ),
+            signature=f"cycle batch for {', '.join(member_names)}",
+            cycle_group=cycle_group,
+            cycle_peers=member_names,
+            batch_members=[unit.unit_id for unit in sorted_members],
+            batch_file_paths=[unit.file_path for unit in sorted_members],
+            batch_target_file_paths=[unit.target_file_path for unit in sorted_members],
+            risk_level=RiskLevel.HIGH,
+            test_requirements=test_requirements,
+            status=UnitStatus.ANALYZED,
+        )
+
+    def _strongly_connected_components(
+        self, graph: dict[str, list[str]]
+    ) -> list[list[str]]:
+        index = 0
+        indices: dict[str, int] = {}
+        lowlinks: dict[str, int] = {}
+        stack: list[str] = []
+        on_stack: set[str] = set()
+        components: list[list[str]] = []
+
+        def strong_connect(node: str) -> None:
+            nonlocal index
+            indices[node] = index
+            lowlinks[node] = index
+            index += 1
+            stack.append(node)
+            on_stack.add(node)
+
+            for neighbor in graph.get(node, []):
+                if neighbor not in indices:
+                    strong_connect(neighbor)
+                    lowlinks[node] = min(lowlinks[node], lowlinks[neighbor])
+                elif neighbor in on_stack:
+                    lowlinks[node] = min(lowlinks[node], indices[neighbor])
+
+            if lowlinks[node] != indices[node]:
+                return
+
+            component: list[str] = []
+            while stack:
+                member = stack.pop()
+                on_stack.remove(member)
+                component.append(member)
+                if member == node:
+                    break
+            components.append(sorted(component))
+
+        for node in graph:
+            if node not in indices:
+                strong_connect(node)
+
+        return components
+
+    def _escalate_risk(self, current: RiskLevel, minimum: RiskLevel) -> RiskLevel:
+        order = {
+            RiskLevel.LOW: 0,
+            RiskLevel.MEDIUM: 1,
+            RiskLevel.HIGH: 2,
+        }
+        return current if order[current] >= order[minimum] else minimum

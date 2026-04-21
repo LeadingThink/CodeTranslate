@@ -9,3 +9,4 @@ __pycache__/
 generated_target/
 .env
 .env.local
+examples/

@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-import atexit
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import readline
-except ImportError:  # pragma: no cover - platform dependent
-    readline = None
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
 
 from ..core.path_utils import normalize_user_path
 from ..core.models import MigrationRequest, ProjectPaths
 from ..engine.orchestrator import MigrationOrchestrator
-from ..runtime.reporter import Reporter, set_reporter
+from ..runtime.reporter import set_reporter
 
 
 _HISTORY_FILE = Path.home() / ".codetranslate_history"
@@ -51,17 +48,17 @@ class ConsoleReporter:
 
 
 def start_interactive_session() -> None:
-    _configure_history()
+    session = _create_prompt_session()
     print("CodeTranslate interactive session")
-    project_root = _prompt("Project path", str(Path.cwd()))
+    project_root = _prompt(session, "Project path", str(Path.cwd()))
     resolved_project_root = normalize_user_path(project_root).resolve()
     default_target_root = (
         resolved_project_root.parent / f"{resolved_project_root.name}_translated"
     )
-    target_root = _prompt("Output path", str(default_target_root))
-    source_language = _prompt("Source language")
-    target_language = _prompt("Target language")
-    action = _prompt("Action [analyze|plan|run]", "run").strip().lower()
+    target_root = _prompt(session, "Output path", str(default_target_root))
+    source_language = _prompt(session, "Source language")
+    target_language = _prompt(session, "Target language")
+    action = _prompt(session, "Action [analyze|plan|run]", "run").strip().lower()
     workspace_root = str(
         normalize_user_path(target_root).resolve().parent / ".codetranslate-workspace"
     )
@@ -104,47 +101,14 @@ def start_interactive_session() -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def _configure_history() -> None:
-    if readline is None:
-        return
-
-    try:
-        readline.read_history_file(_HISTORY_FILE)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        return
-
-    readline.set_history_length(1000)
-    if hasattr(readline, "set_auto_history"):
-        readline.set_auto_history(False)
-    atexit.register(_save_history)
+def _create_prompt_session() -> PromptSession:
+    _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    return PromptSession(history=FileHistory(str(_HISTORY_FILE)))
 
 
-def _save_history() -> None:
-    if readline is None:
-        return
-
-    try:
-        _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        readline.write_history_file(_HISTORY_FILE)
-    except OSError:
-        pass
-
-
-def _prompt(label: str, default: str | None = None) -> str:
+def _prompt(
+    session: PromptSession, label: str, default: str | None = None
+) -> str:
     suffix = f" [{default}]" if default else ""
-    value = input(f"{label}{suffix}: ").strip()
-    _add_history_entry(value or (default or ""))
+    value = session.prompt(f"{label}{suffix}: ", default=default or "").strip()
     return value or (default or "")
-
-
-def _add_history_entry(entry: str) -> None:
-    if readline is None or not entry:
-        return
-
-    last_index = readline.get_current_history_length()
-    if last_index > 0 and readline.get_history_item(last_index) == entry:
-        return
-
-    readline.add_history(entry)

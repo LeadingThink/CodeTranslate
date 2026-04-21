@@ -228,10 +228,16 @@ class MigrationOrchestrator:
             if unit.status not in {UnitStatus.VERIFIED, UnitStatus.FAILED}
         }
         cache: dict[str, list[str]] = {}
+        visiting: set[str] = set()
 
         def visit(unit_id: str) -> list[str]:
             if unit_id in cache:
                 return cache[unit_id]
+            if unit_id in visiting:
+                unit = units_by_id[unit_id]
+                return [Path(unit.file_path).name]
+
+            visiting.add(unit_id)
             unit = units_by_id[unit_id]
             candidates = [
                 visit(dependent_id)
@@ -240,6 +246,7 @@ class MigrationOrchestrator:
             ]
             best_tail = max(candidates, key=len, default=[])
             cache[unit_id] = [Path(unit.file_path).name] + best_tail
+            visiting.remove(unit_id)
             return cache[unit_id]
 
         chains = [visit(unit_id) for unit_id in pending]

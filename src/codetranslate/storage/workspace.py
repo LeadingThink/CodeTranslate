@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from ..core.models import (
@@ -96,7 +96,11 @@ class WorkspaceManager:
         staged: list[dict[str, str]] = []
         source_root = Path(self.paths.source_root).resolve()
         for item in related_resources:
-            raw_path = str(item.get("path", "")).strip()
+            if self._is_already_staged(item):
+                staged.append(dict(item))
+                continue
+
+            raw_path = str(item.get("source_path") or item.get("path", "")).strip()
             if not raw_path:
                 continue
             source = Path(raw_path)
@@ -287,11 +291,12 @@ class WorkspaceManager:
     def _resolve_target_destination(
         self, source: Path, target_relative_path: str | None
     ) -> Path:
-        if target_relative_path:
-            destination = (self.target_root / target_relative_path).resolve()
-        else:
-            destination = (self.target_root / source.name).resolve()
         target_root_resolved = self.target_root.resolve()
+        if target_relative_path:
+            relative_target = self._normalize_target_relative_path(target_relative_path)
+            destination = target_root_resolved.joinpath(*relative_target.parts).resolve()
+        else:
+            destination = (target_root_resolved / source.name).resolve()
         if not (
             destination == target_root_resolved
             or target_root_resolved in destination.parents
@@ -309,3 +314,36 @@ class WorkspaceManager:
             if not parts:
                 return source.name
             return "/".join(["external_sources", *parts])
+
+    def _is_already_staged(self, item: dict[str, str]) -> bool:
+        if str(item.get("staged", "")).lower() != "true":
+            return False
+        raw_path = str(item.get("path", "")).strip()
+        if not raw_path:
+            return False
+        path = Path(raw_path).resolve()
+        return self._is_within(path, self.target_root.resolve()) or self._is_within(
+            path, self.root.resolve()
+        )
+
+    def _normalize_target_relative_path(self, target_relative_path: str) -> Path:
+        windows_path = PureWindowsPath(target_relative_path)
+        posix_path = PurePosixPath(target_relative_path.replace("\\", "/"))
+        if windows_path.is_absolute() or posix_path.is_absolute() or windows_path.drive:
+            raise ValueError(
+                f"target relative path must stay within target root: {target_relative_path}"
+            )
+        parts = [
+            part
+            for part in posix_path.parts
+            if part not in {"", ".", windows_path.anchor, posix_path.anchor}
+        ]
+        if not parts or any(part == ".." for part in parts):
+            raise ValueError(
+                f"target relative path must stay within target root: {target_relative_path}"
+            )
+        return Path(*parts)
+
+    @staticmethod
+    def _is_within(path: Path, root: Path) -> bool:
+        return path == root or root in path.parents

@@ -1,0 +1,4 @@
+com\codetranslate\javaparserbridge\JavaParserBridgeMain.class
+com\codetranslate\javaparserbridge\JavaParserBridgeMain$BridgeAnalyzer.class
+com\codetranslate\javaparserbridge\JavaParserBridgeMain$IndexedCompilationUnit.class
+com\codetranslate\javaparserbridge\JavaParserBridgeMain$ParsedJavaFile.class

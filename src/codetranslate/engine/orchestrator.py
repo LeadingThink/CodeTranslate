@@ -204,9 +204,37 @@ class MigrationOrchestrator:
 
     def _load_or_create_plan(self, analysis: AnalysisResult) -> list[MigrationUnit]:
         units = self.workspace.load_units()
-        if units:
+        if units and self._plan_matches_analysis(units, analysis):
             return units
+        if units:
+            get_reporter().stage(
+                "Plan Refresh",
+                "cached plan is stale; rebuilding from latest analysis",
+            )
         return self.plan(analysis)
+
+    def _plan_matches_analysis(
+        self, units: list[MigrationUnit], analysis: AnalysisResult
+    ) -> bool:
+        expected_files = {
+            str(self._resolve_source_record_path(analysis.project_root, source_file))
+            for source_file in analysis.source_files
+            if source_file.role == "source"
+        }
+        planned_files: set[str] = set()
+        for unit in units:
+            file_paths = unit.batch_file_paths or [unit.file_path]
+            planned_files.update(str(Path(path).resolve()) for path in file_paths)
+        return expected_files == planned_files
+
+    def _resolve_source_record_path(self, project_root: str, source_file: object) -> Path:
+        root = Path(project_root).resolve()
+        relative_path = Path(getattr(source_file, "path"))
+        direct_path = (root / relative_path).resolve()
+        if direct_path.exists():
+            return direct_path
+        sibling_path = (root.parent / relative_path).resolve()
+        return sibling_path
 
     def _load_or_skip_analysis(self) -> AnalysisResult:
         pipeline_state = self.workspace.load_pipeline_state()

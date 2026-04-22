@@ -11,7 +11,7 @@ from ..core.models import (
     SourceFileRecord,
     UnitStatus,
 )
-from ..core.path_utils import sanitize_target_relative_path
+from ..core.path_utils import python_module_output_path, sanitize_target_relative_path
 
 
 class MigrationPlanner:
@@ -133,6 +133,8 @@ class MigrationPlanner:
             if target_suffix
             else source_relative_path
         )
+        if target_language == "python":
+            return python_module_output_path(target_path)
         return sanitize_target_relative_path(target_path)
 
     def _default_suffix_for_language(self, language: str) -> str:

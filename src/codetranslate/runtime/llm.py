@@ -32,6 +32,7 @@ class LLMGeneration:
 @dataclass(slots=True)
 class AgentContext:
     paths: ProjectPaths
+    allowed_write_paths: list[str]
 
 
 class LLMClient:
@@ -104,7 +105,10 @@ class LLMClient:
             try:
                 result = self.agent.invoke(
                     {"messages": [{"role": "user", "content": current_task}]},
-                    context=AgentContext(paths=self.paths),
+                    context=AgentContext(
+                        paths=self.paths,
+                        allowed_write_paths=required_paths,
+                    ),
                 )
                 missing = [path for path in required_paths if not Path(path).exists()]
                 if missing:
@@ -209,6 +213,9 @@ class LLMClient:
         source_language = context.target_constraints.get("source_language", "python")
         target_language = context.target_constraints.get("language", "python")
         source_fence = self._code_fence_language(source_language)
+        language_guardrails = self._language_specific_requirements(
+            source_language, target_language
+        )
         return (
             "Migrate one source file or one tightly-coupled cycle batch into the target file(s) by using tools.\n"
             f"Unit: {context.unit_id}\n"
@@ -243,6 +250,7 @@ class LLMClient:
             "- Preserve semantics covered by related tests and resource fixtures when they exist.\n"
             "- Absolute source paths from other mounted projects may be read when needed.\n"
             "- If you need a related resource fixture in the translated project, first copy it into workspace_root or target_root with copy_path, then prefer the copied path.\n"
+            f"{language_guardrails}"
             f"- Before finishing, call validate_file on each target path in {json.dumps(context.target_file_paths, ensure_ascii=False)}.\n\n"
             f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
             f"Source code:\n```{source_fence}\n{context.source_code}\n```"
@@ -292,6 +300,9 @@ class LLMClient:
         source_language = context.target_constraints.get("source_language", "python")
         target_language = context.target_constraints.get("language", "python")
         source_fence = self._code_fence_language(source_language)
+        language_guardrails = self._language_specific_requirements(
+            source_language, target_language
+        )
         return (
             "Repair the smallest failing file by using tools while preserving file-level source contracts.\n"
             f"Unit: {context.unit_id}\n"
@@ -315,6 +326,7 @@ class LLMClient:
             "- Absolute source paths from other mounted projects may be read when needed.\n"
             "- If a resource fixture is needed, use an already staged path when available; otherwise use copy_path to place it in workspace_root or target_root before reading it.\n"
             f"- Keep tests aligned with this guidance: {self._test_style_for_language(context.target_constraints.get('language', 'python'))}.\n"
+            f"{language_guardrails}"
             "- Validate any source or test file you changed before finishing using validate_file.\n\n"
             f"Failure log:\n```text\n{failure_log[:3000]}\n```\n\n"
             f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
@@ -334,6 +346,19 @@ class LLMClient:
         if language == "nodejs":
             return "typescript"
         return "python"
+
+    def _language_specific_requirements(
+        self, source_language: str, target_language: str
+    ) -> str:
+        if source_language != "java" or target_language != "python":
+            return ""
+        return (
+            "- When migrating Java enums with constructor arguments into Python, preserve unique enum member values; never use shared booleans or integers as the enum value for multiple members.\n"
+            "- If an enum carries metadata such as `isConvertible`, store that metadata separately from the member identity, for example with tuple values or `__new__`.\n"
+            "- Preserve overloaded Java constructors with explicit Python dispatch that distinguishes argument count and argument types.\n"
+            "- Keep Java map/property semantics exact: do not replace unconditional `put` behavior with conditional setters, and do not skip writes that the Java source performs.\n"
+            "- If a dependency target path is known, import it using the concrete translated module path instead of fallback import ladders.\n"
+        )
 
 
 def _build_agent_tools() -> list[Any]:
@@ -408,7 +433,7 @@ def _build_agent_tools() -> list[Any]:
     @tool
     def mkdir(path: str, runtime: ToolRuntime[AgentContext]) -> str:
         """Create a directory path inside the project, workspace, or target roots."""
-        resolved = _resolve_output_path(path, runtime.context)
+        resolved = _resolve_output_dir_path(path, runtime.context)
         resolved.mkdir(parents=True, exist_ok=True)
         logger.info("Tool Call `mkdir`\npath=%s", resolved)
         get_reporter().tool("mkdir", str(resolved), "ok")
@@ -436,7 +461,7 @@ def _build_agent_tools() -> list[Any]:
     ) -> str:
         """Copy a file or directory from an allowed source root into workspace or target roots."""
         source = _resolve_access_path(source_path, runtime.context)
-        destination = _resolve_output_path(destination_path, runtime.context)
+        destination = _resolve_output_root_path(destination_path, runtime.context)
         if not source.exists():
             raise FileNotFoundError(f"source path does not exist: {source}")
         if source.is_dir():
@@ -520,6 +545,28 @@ def _resolve_access_path(raw_path: str, agent_context: AgentContext) -> Path:
 
 
 def _resolve_output_path(raw_path: str, agent_context: AgentContext) -> Path:
+    resolved = _resolve_output_root_path(raw_path, agent_context)
+    allowed_write_paths = {
+        Path(path).resolve() for path in agent_context.allowed_write_paths
+    }
+    if allowed_write_paths and resolved not in allowed_write_paths:
+        raise ValueError(f"destination path not owned by current unit: {resolved}")
+    return resolved
+
+
+def _resolve_output_dir_path(raw_path: str, agent_context: AgentContext) -> Path:
+    resolved = _resolve_output_root_path(raw_path, agent_context)
+    allowed_write_paths = {
+        Path(path).resolve() for path in agent_context.allowed_write_paths
+    }
+    if not allowed_write_paths:
+        return resolved
+    if any(resolved == path.parent or resolved in path.parents for path in allowed_write_paths):
+        return resolved
+    raise ValueError(f"destination path not owned by current unit: {resolved}")
+
+
+def _resolve_output_root_path(raw_path: str, agent_context: AgentContext) -> Path:
     path = Path(raw_path)
     if not path.is_absolute():
         path = Path(agent_context.paths.target_root) / path

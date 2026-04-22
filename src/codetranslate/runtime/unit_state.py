@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 from ..core.models import MigrationUnit, UnitStatus
 
 
@@ -48,6 +47,23 @@ class UnitStateMachine:
             if self._dependencies_verified(dependent, units_by_id):
                 dependent.status = UnitStatus.READY
 
+    def invalidate_stale_verified_units(
+        self,
+        units: list[MigrationUnit],
+        current_signatures: dict[str, dict[str, str]],
+    ) -> list[str]:
+        units_by_id = {unit.unit_id: unit for unit in units}
+        invalidated: list[str] = []
+        for unit in units:
+            if unit.status != UnitStatus.VERIFIED:
+                continue
+            expected = unit.verified_output_signatures
+            current = current_signatures.get(unit.unit_id, {})
+            if not expected or expected == current:
+                continue
+            self._mark_dirty(unit, units_by_id, invalidated)
+        return invalidated
+
     def can_run_as_single_unit(
         self,
         unit: MigrationUnit,
@@ -78,3 +94,21 @@ class UnitStateMachine:
             units_by_id[dependency].status == UnitStatus.VERIFIED
             for dependency in unit.dependencies
         )
+
+    def _mark_dirty(
+        self,
+        unit: MigrationUnit,
+        units_by_id: dict[str, MigrationUnit],
+        invalidated: list[str],
+    ) -> None:
+        if unit.unit_id in invalidated:
+            return
+        unit.status = UnitStatus.DISCOVERED
+        unit.failure_reason = None
+        unit.verified_output_signatures = {}
+        invalidated.append(unit.unit_id)
+        for dependent_id in unit.dependents:
+            dependent = units_by_id[dependent_id]
+            if dependent.status == UnitStatus.FAILED:
+                continue
+            self._mark_dirty(dependent, units_by_id, invalidated)

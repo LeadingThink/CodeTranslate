@@ -49,6 +49,29 @@ def sanitize_target_relative_path(path: str | PurePath) -> Path:
     return Path(*sanitized_parts, f"{sanitized_filename}{suffix}")
 
 
+def python_module_output_path(path: str | PurePath) -> Path:
+    raw_path = PurePath(path)
+    trimmed = _strip_java_source_root(raw_path)
+    return sanitize_target_relative_path(trimmed)
+
+
+def _strip_java_source_root(path: PurePath) -> PurePath:
+    parts = list(path.parts)
+    source_root_markers = (
+        ("src", "main", "java"),
+        ("src", "test", "java"),
+    )
+    for index in range(len(parts)):
+        tail = parts[index:]
+        for marker in source_root_markers:
+            if len(tail) >= len(marker) and tuple(tail[: len(marker)]) == marker:
+                preserved_prefix = parts[:index]
+                preserved_suffix = tail[len(marker) :]
+                if preserved_suffix:
+                    return PurePath(*preserved_prefix, *preserved_suffix)
+    return path
+
+
 def _is_windows_host() -> bool:
     return os.name == "nt"
 

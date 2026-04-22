@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -205,6 +206,7 @@ class WorkspaceManager:
                     "status": unit.status,
                     "retry_count": unit.retry_count,
                     "failure_reason": unit.failure_reason,
+                    "verified_output_signatures": unit.verified_output_signatures,
                 }
                 for unit in units
             },
@@ -262,9 +264,22 @@ class WorkspaceManager:
                 "failure_reason": status_row.get(
                     "failure_reason", item.get("failure_reason")
                 ),
+                "verified_output_signatures": status_row.get(
+                    "verified_output_signatures",
+                    item.get("verified_output_signatures", {}),
+                ),
             }
             units.append(MigrationUnit(**normalized))
         return units
+
+    def capture_file_signatures(self, paths: list[Path]) -> dict[str, str]:
+        signatures: dict[str, str] = {}
+        for path in paths:
+            resolved = path.resolve()
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            signatures[str(resolved)] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        return signatures
 
     def save_plan_state(self, units: list[MigrationUnit]) -> None:
         state = PipelineState(

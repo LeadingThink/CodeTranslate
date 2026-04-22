@@ -244,7 +244,7 @@ class PlanRefreshTests(unittest.TestCase):
         self.assertEqual(len(rebuilt_units), 1)
         self.assertTrue(
             rebuilt_units[0].target_file_path.endswith(
-                "validator_api\\src\\main\\java\\net\\pinnacle21\\validator\\api\\My_Class.py"
+                "validator_api\\net\\pinnacle21\\validator\\api\\My_Class.py"
             )
         )
 

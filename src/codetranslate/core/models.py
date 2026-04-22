@@ -202,6 +202,7 @@ class MigrationUnit:
     retry_count: int = 0
     max_retries: int = 2
     failure_reason: str | None = None
+    verified_output_signatures: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

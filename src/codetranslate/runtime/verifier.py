@@ -29,6 +29,9 @@ class Verifier:
             )
 
         unit.status = UnitStatus.VERIFIED
+        unit.verified_output_signatures = self.workspace.capture_file_signatures(
+            target_paths
+        )
         log_path = self.workspace.log_unit(
             unit.unit_id, "verify", "verification passed"
         )

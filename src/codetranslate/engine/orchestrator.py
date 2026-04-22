@@ -150,6 +150,7 @@ class MigrationOrchestrator:
         completed_in_batch = 0
 
         while True:
+            self._invalidate_stale_units(units)
             ready_units = self.state_machine.refresh_ready_units(units)
             if not ready_units:
                 self._write_blocked_report_if_needed(units)
@@ -384,3 +385,19 @@ class MigrationOrchestrator:
         if not chains:
             return ""
         return " -> ".join(max(chains, key=len))
+
+    def _invalidate_stale_units(self, units: list[MigrationUnit]) -> None:
+        current_signatures: dict[str, dict[str, str]] = {}
+        for unit in units:
+            target_paths = [
+                Path(path)
+                for path in (unit.batch_target_file_paths or [unit.target_file_path])
+            ]
+            current_signatures[unit.unit_id] = self.workspace.capture_file_signatures(
+                target_paths
+            )
+        invalidated = self.state_machine.invalidate_stale_verified_units(
+            units, current_signatures
+        )
+        if invalidated:
+            self.workspace.save_unit_statuses(units)

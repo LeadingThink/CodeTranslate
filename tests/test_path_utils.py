@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from codetranslate.core.path_utils import (
     normalize_user_path,
+    python_module_output_path,
     sanitize_path_component,
     sanitize_target_relative_path,
 )
@@ -42,6 +43,19 @@ class SanitizeTargetPathTests(unittest.TestCase):
             str(path).replace("\\", "/"),
             "validator_api/src/main/java/net/pinnacle21/My_Class.py",
         )
+
+    def test_python_module_output_path_removes_java_source_root(self) -> None:
+        path = python_module_output_path(
+            "validator-api/src/main/java/net/pinnacle21/My-Class.py"
+        )
+        self.assertEqual(
+            str(path).replace("\\", "/"),
+            "validator_api/net/pinnacle21/My_Class.py",
+        )
+
+    def test_python_module_output_path_keeps_module_prefix_for_single_module_layout(self) -> None:
+        path = python_module_output_path("src/main/java/com/example/App.py")
+        self.assertEqual(str(path).replace("\\", "/"), "com/example/App.py")
 
 
 if __name__ == "__main__":

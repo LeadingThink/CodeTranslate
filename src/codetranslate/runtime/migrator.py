@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .llm import LLMClient
 from .language_runtime import validate_source_file
+from .python_import_normalizer import normalize_python_imports
 from ..core.models import MigrationUnit, UnitContext, UnitExecutionResult, UnitStatus
 from ..storage.workspace import WorkspaceManager
 
@@ -26,6 +27,7 @@ class UnitMigrator:
                 f"Agent did not write target file(s): {[str(path) for path in missing_paths]}"
             )
         for target_path in target_paths:
+            normalize_python_imports(target_path, Path(self.llm.paths.target_root))
             validate_source_file(target_path, unit.target_language)
         log_path = self.workspace.log_unit(
             unit.unit_id, "generate", generation.rationale

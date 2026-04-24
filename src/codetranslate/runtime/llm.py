@@ -19,6 +19,7 @@ from ..core.settings import AppSettings
 from ..analysis.sibling_scanner import analyze_java_directory
 from .language_runtime import run_test_file as runtime_run_test_file
 from .language_runtime import validate_source_file
+from .python_import_normalizer import normalize_python_imports
 from .reporter import extract_token_usage, get_reporter
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,8 @@ class LLMClient:
                     raise RuntimeError(
                         f"Agent finished without writing required files: {missing}"
                     )
+                for path in required_paths:
+                    self._normalize_and_validate_required_path(Path(path))
 
                 final_text = self._extract_final_text(result)
                 token_usage = extract_token_usage(result)
@@ -140,6 +143,13 @@ class LLMClient:
             )
         raise RuntimeError("LangChain agent invocation failed with an unknown error.")
 
+    def _normalize_and_validate_required_path(self, path: Path) -> None:
+        resolved = path.resolve()
+        target_root = Path(self.paths.target_root).resolve()
+        if resolved == target_root or target_root in resolved.parents:
+            normalize_python_imports(resolved, target_root)
+        _validate_file_path(resolved)
+
     def _build_retry_task(
         self, original_task: str, error: Exception, attempt_number: int
     ) -> str:
@@ -152,6 +162,7 @@ class LLMClient:
             "- Treat the observed error as authoritative feedback from the runtime.\n"
             "- Re-check exact file paths with exists or list_dir before calling read_file.\n"
             "- Do not reuse the failing path unless the tools confirm it exists.\n"
+            "- Never attempt to write dependency files, sibling files, or any path outside the current unit's explicitly required output paths.\n"
             "- If the required file is missing at the end, write it to the exact requested path before finishing.\n"
         )
 
@@ -216,6 +227,7 @@ class LLMClient:
         language_guardrails = self._language_specific_requirements(
             source_language, target_language
         )
+        import_contract = self._python_import_contract(context)
         return (
             "Migrate one source file or one tightly-coupled cycle batch into the target file(s) by using tools.\n"
             f"Unit: {context.unit_id}\n"
@@ -251,6 +263,7 @@ class LLMClient:
             "- Absolute source paths from other mounted projects may be read when needed.\n"
             "- If you need a related resource fixture in the translated project, first copy it into workspace_root or target_root with copy_path, then prefer the copied path.\n"
             f"{language_guardrails}"
+            f"{import_contract}"
             f"- Before finishing, call validate_file on each target path in {json.dumps(context.target_file_paths, ensure_ascii=False)}.\n\n"
             f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
             f"Source code:\n```{source_fence}\n{context.source_code}\n```"
@@ -303,6 +316,7 @@ class LLMClient:
         language_guardrails = self._language_specific_requirements(
             source_language, target_language
         )
+        import_contract = self._python_import_contract(context)
         return (
             "Repair the smallest failing file by using tools while preserving file-level source contracts.\n"
             f"Unit: {context.unit_id}\n"
@@ -320,13 +334,15 @@ class LLMClient:
             f"Module-level context:\n{context.module_level_context}\n"
             "Requirements:\n"
             "- Read the relevant existing file before editing.\n"
-            "- Fix either the target file or the test file.\n"
+            "- Fix only the current target file or the current test file.\n"
+            "- Do not modify dependency files even if the traceback mentions them; adapt the owned file(s) around the dependency behavior instead.\n"
             "- Write the corrected file with write_file.\n"
             f"- Default project paths are: source_root={self.paths.source_root}, workspace_root={self.paths.workspace_root}, target_root={self.paths.target_root}.\n"
             "- Absolute source paths from other mounted projects may be read when needed.\n"
             "- If a resource fixture is needed, use an already staged path when available; otherwise use copy_path to place it in workspace_root or target_root before reading it.\n"
             f"- Keep tests aligned with this guidance: {self._test_style_for_language(context.target_constraints.get('language', 'python'))}.\n"
             f"{language_guardrails}"
+            f"{import_contract}"
             "- Validate any source or test file you changed before finishing using validate_file.\n\n"
             f"Failure log:\n```text\n{failure_log[:3000]}\n```\n\n"
             f"Full source file:\n```{source_fence}\n{context.source_file_content}\n```\n\n"
@@ -358,7 +374,44 @@ class LLMClient:
             "- Preserve overloaded Java constructors with explicit Python dispatch that distinguishes argument count and argument types.\n"
             "- Keep Java map/property semantics exact: do not replace unconditional `put` behavior with conditional setters, and do not skip writes that the Java source performs.\n"
             "- If a dependency target path is known, import it using the concrete translated module path instead of fallback import ladders.\n"
+            "- Use a single Python import convention: absolute imports rooted at the translated top-level package under target_root, for example `validator_api.net...` or `validator_core.net...`.\n"
+            "- Do not emit bare sibling imports like `from AbstractOptions import ...`; convert them to the concrete package-root import path.\n"
+            "- Do not generate `importlib.util.spec_from_file_location`, `module_from_spec`, `exec_module`, or `sys.path` mutation as a dependency-bridging strategy.\n"
         )
+
+    def _python_import_contract(self, context: UnitContext) -> str:
+        source_language = context.target_constraints.get("source_language", "python")
+        target_language = context.target_constraints.get("language", "python")
+        if source_language != "java" or target_language != "python":
+            return ""
+        current_module = _python_module_name(
+            Path(context.target_file_path), Path(self.paths.target_root)
+        )
+        dependency_modules: list[dict[str, str]] = []
+        for item in context.dependency_targets:
+            target_path = item.get("target_path")
+            if not target_path:
+                continue
+            dependency_modules.append(
+                {
+                    "name": item.get("name", ""),
+                    "target_path": target_path,
+                    "module": _python_module_name(
+                        Path(target_path), Path(self.paths.target_root)
+                    ),
+                }
+            )
+        return (
+            f"- Current Python module path must be `{current_module}`.\n"
+            "- For Java→Python migrations, imports must resolve through package-root module paths derived from target_root.\n"
+            f"- Dependency import map: {json.dumps(dependency_modules, ensure_ascii=False)}.\n"
+            "- Never bridge dependencies by loading sibling files with `spec_from_file_location`; import their package module directly.\n"
+        )
+
+
+def _python_module_name(path: Path, target_root: Path) -> str:
+    relative_path = path.resolve().relative_to(target_root.resolve())
+    return ".".join(relative_path.with_suffix("").parts)
 
 
 def _build_agent_tools() -> list[Any]:
@@ -445,6 +498,7 @@ def _build_agent_tools() -> list[Any]:
         resolved = _resolve_output_path(path, runtime.context)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content, encoding="utf-8")
+        normalize_python_imports(resolved, Path(runtime.context.paths.target_root))
         logger.info(
             "Tool Call `write_file`\npath=%s\ncontent=%s",
             resolved,

@@ -48,21 +48,25 @@ class UnitExecutor:
         logger.info("Processing unit %s", unit.unit_id)
         label = "Execute Batch" if unit.kind == "cycle_batch" else "Execute File"
         get_reporter().stage(label, unit.file_path)
-        context = self.context_builder.build(unit, analysis, units_by_id)
-        if context.related_resources:
-            staged_resources = self.workspace.stage_related_resources(
-                context.related_resources
-            )
-            if staged_resources:
-                context.related_resources = staged_resources
-        self.workspace.save_context(context)
-        self.migrator.migrate(unit, context)
+        try:
+            context = self.context_builder.build(unit, analysis, units_by_id)
+            if context.related_resources:
+                staged_resources = self.workspace.stage_related_resources(
+                    context.related_resources
+                )
+                if staged_resources:
+                    context.related_resources = staged_resources
+            self.workspace.save_context(context)
+            self.migrator.migrate(unit, context)
 
-        test_path = self.tester.generate_test(unit, context)
-        result = self._run_checks(unit, test_path)
-        if result.status == UnitStatus.VERIFIED:
-            return True
-        return self._repair_until_verified(unit, context, result.log_path, test_path)
+            test_path = self.tester.generate_test(unit, context)
+            result = self._run_checks(unit, test_path)
+            if result.status == UnitStatus.VERIFIED:
+                return True
+            return self._repair_until_verified(unit, context, result.log_path, test_path)
+        except Exception as exc:
+            self._fail_unit(unit, str(exc), "execute")
+            return False
 
     def _repair_until_verified(
         self,
@@ -75,16 +79,20 @@ class UnitExecutor:
         while (
             unit.retry_count <= unit.max_retries and unit.status != UnitStatus.VERIFIED
         ):
-            if not self.repairer.repair(unit, context, failure_log, test_path):
+            try:
+                if not self.repairer.repair(unit, context, failure_log, test_path):
+                    return False
+                result = self._run_checks(unit, test_path)
+                if result.status == UnitStatus.VERIFIED:
+                    return True
+                failure_log = (
+                    self._read_failure_log(result.log_path)
+                    or unit.failure_reason
+                    or failure_log
+                )
+            except Exception as exc:
+                self._fail_unit(unit, str(exc), "repair")
                 return False
-            result = self._run_checks(unit, test_path)
-            if result.status == UnitStatus.VERIFIED:
-                return True
-            failure_log = (
-                self._read_failure_log(result.log_path)
-                or unit.failure_reason
-                or failure_log
-            )
         unit.status = UnitStatus.FAILED
         return False
 
@@ -107,3 +115,8 @@ class UnitExecutor:
             return Path(log_path).read_text(encoding="utf-8")
         except Exception:
             return log_path
+
+    def _fail_unit(self, unit: MigrationUnit, message: str, stage: str) -> None:
+        unit.status = UnitStatus.FAILED
+        unit.failure_reason = message[:500]
+        self.workspace.log_unit(unit.unit_id, stage, message)

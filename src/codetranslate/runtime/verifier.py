@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from .language_runtime import run_test_file, validate_source_file
+from .python_import_normalizer import normalize_python_imports
 from ..core.models import MigrationUnit, UnitExecutionResult, UnitStatus
 from ..storage.workspace import WorkspaceManager
 
@@ -19,6 +20,7 @@ class Verifier:
         ]
         try:
             for target_path in target_paths:
+                normalize_python_imports(target_path, self.workspace.target_root)
                 validate_source_file(target_path, unit.target_language)
         except Exception as exc:
             unit.failure_reason = str(exc)
@@ -90,6 +92,7 @@ class Verifier:
                 errors.append({"path": str(path), "error": "missing target file"})
                 continue
             try:
+                normalize_python_imports(path, self.workspace.target_root)
                 validate_source_file(path, unit.target_language)
             except Exception as exc:
                 errors.append({"path": str(path), "error": str(exc)})

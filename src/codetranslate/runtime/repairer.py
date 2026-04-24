@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .llm import LLMClient
+from .language_runtime import validate_source_file
+from .python_import_normalizer import normalize_python_imports
 from ..core.models import MigrationUnit, RepairRecord, UnitContext, UnitStatus
 from ..storage.workspace import WorkspaceManager
 
@@ -48,6 +50,7 @@ class Repairer:
             unit.status = UnitStatus.FAILED
             unit.failure_reason = failure_log[:500]
             return False
+        self._normalize_and_validate_existing_targets(unit, test_path)
         unit.status = UnitStatus.GENERATED
         return True
 
@@ -64,3 +67,15 @@ class Repairer:
         if "traceback" in lowered:
             return "runtime_exception"
         return "unknown_failure"
+
+    def _normalize_and_validate_existing_targets(
+        self, unit: MigrationUnit, test_path: Path
+    ) -> None:
+        target_root = Path(self.llm.paths.target_root)
+        target_items = unit.batch_target_file_paths or [unit.target_file_path]
+        for path in (Path(item) for item in target_items):
+            if path.exists():
+                normalize_python_imports(path, target_root)
+                validate_source_file(path, unit.target_language)
+        if test_path.exists():
+            validate_source_file(test_path, unit.target_language)
